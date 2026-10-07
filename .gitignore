@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+examples/*/ledger/lock.json

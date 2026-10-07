@@ -1,0 +1,6 @@
+[project]
+name = "toy"
+
+[lean]
+dump = "lean.json"          # produced by the Lean extractor; hand-made here
+# extract = "./run.sh dump"  # reads declaration names on stdin, prints the JSON dump

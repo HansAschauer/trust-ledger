@@ -1,0 +1,10 @@
+{"toolchain": "leanprover/lean4:v4.34.1",
+ "decls": {
+  "Toy.f":  {"kind": "def", "type": "Nat → Nat", "value": "fun n => n + 1", "axioms": [], "sorry": false,
+             "stmt_deps": [], "proof_deps": [], "assumptions": []},
+  "Toy.lem": {"kind": "theorem", "type": "∀ n, Toy.f n > n", "proof": "fun n => Nat.lt_succ_self n",
+             "axioms": ["propext"], "sorry": false, "stmt_deps": ["Toy.f"], "proof_deps": [], "assumptions": []},
+  "Toy.thm": {"kind": "theorem", "type": "Toy.BanachProp → ∀ n, Toy.f (Toy.f n) > n", "proof": "fun h n => lem_trans h n",
+             "axioms": ["propext", "Classical.choice"], "sorry": false, "stmt_deps": ["Toy.f"], "proof_deps": ["Toy.lem"],
+             "assumptions": ["Toy.BanachProp"]}
+ }}
