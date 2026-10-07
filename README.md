@@ -46,3 +46,15 @@ means; that is what attestation is for, and an attestation is only as good as th
 signs it. There is no PKI: accountability comes from publishing the root under the authors' names.
 
 Tests: `python3 -m unittest discover -s tests`.
+
+## Validation so far
+
+On a private research Lean project (86 registered declarations, 709 in the dependency
+closure): statuses and axiom sets agree with an independent export for all 86;
+the dump is byte-identical across runs. Mutation test on a leaf theorem, with the claim attested
+beforehand:
+
+| mutation | result |
+|---|---|
+| unused `have` added to the proof, statement unchanged | `verify` fails (proof node, claim and attestation hashes changed); attestation stays *current*; other claims unchanged |
+| statement weakened (`<` to `≤`) and proof replaced by `sorry` | claim status `sorry`, `sorry:` entry in the register, attestation *STALE*; other claims unchanged |

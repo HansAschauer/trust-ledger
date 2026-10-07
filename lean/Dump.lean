@@ -157,7 +157,12 @@ unsafe def main (args : List String) : IO UInt32 := do
     let l ← stdin.getLine
     if l.isEmpty then break
     let t := l.trimAscii.toString
-    if t != "" then todo := t.toName :: todo
+    if t.endsWith "*" then  -- prefix: every project theorem whose name starts with it
+      let pre := (t.dropEnd 1).toString
+      for n in env.constants.fold (init := #[]) (fun acc n ci =>
+          if isProject cfg n && ci matches .thmInfo _ && n.toString.startsWith pre then acc.push n else acc) do
+        todo := n :: todo
+    else if t != "" then todo := t.toName :: todo
   let mut done : NameSet := {}
   let mut out : List (String × Json) := []
   let ctx : Core.Context := { fileName := "<dump>", fileMap := default, options := maxRecDepth.set {} 4096 }

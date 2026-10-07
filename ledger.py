@@ -127,6 +127,15 @@ class Ledger:
         elif any(c.get("lean") for c in self.claims.values()):
             self.errors.append(f"{p} missing: run `ledger.py extract`")
 
+    def expand_lean(self, names):
+        out = []
+        for x in names:
+            if x.endswith("*"):
+                out += sorted(n for n, d in self.decls.items() if n.startswith(x[:-1]) and d["kind"] == "theorem")
+            else:
+                out.append(x)
+        return out
+
     # -------------------------------------------------------- graph
     def build(self):
         payload, deps = {}, {}  # full graph
@@ -168,6 +177,8 @@ class Ledger:
                     continue
                 payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
                 deps[i] = []
+        for n, c in self.claims.items():
+            c["lean"] = self.expand_lean(c.get("lean", []))
         for n, c in self.claims.items():
             i = "claim:" + n
             d = []
