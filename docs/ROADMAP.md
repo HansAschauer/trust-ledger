@@ -2,7 +2,7 @@
 
 ## Planned (agreed order)
 
-Done 2026-10-08: steps 1 to 3 (per-paper scopes, paper source and statements from LaTeX, generated root/status
+Done 2026-10-08: all five steps (signatures via ssh-keygen, key nodes, standalone attestation files); steps 1 to 3 (per-paper scopes, paper source and statements from LaTeX, generated root/status
 files + `ledgercheck.sty`, tested by compiling a real paper), and the environment globs / stale-dump guard of step 4.
 1. Per-paper scoping (`--paper`), one root per paper.
 2. Paper source as a node (all `.tex`/`.bib` reached from main, minus generated ledger files);

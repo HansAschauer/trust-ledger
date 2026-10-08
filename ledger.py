@@ -12,12 +12,13 @@ Single file, Python >= 3.11, standard library only. Normative format: docs/FORMA
 
 DIR is the project root; it must contain ledger/ledger.toml.
 """
-import argparse, datetime, hashlib, json, re, subprocess, sys, tomllib
+import argparse, base64, datetime, hashlib, json, re, subprocess, sys, tempfile, tomllib
 from pathlib import Path
 
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source")
+SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 
 
@@ -81,6 +82,42 @@ def merkle(payload, deps, tag):
             for m in comp:
                 h[m] = H(tag + "-member", [m, hc])
     return h
+
+
+# ---------------------------------------------------------------- signatures (ssh-keygen -Y)
+def fingerprint(pub):
+    """OpenSSH-style SHA256 fingerprint of a public key line ("ssh-ed25519 AAAA... comment")."""
+    blob = base64.b64decode(pub.split()[1])
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+
+
+def attestation_message(project, a):
+    """The bytes that are signed: everything the attestation asserts, in canonical JSON."""
+    body = {k: a.get(k, "") for k in ("claim", "person", "date", "level", "reason", "bound")}
+    body |= {"checklist": list(a.get("checklist", [])), "project": project}
+    return ("trust-ledger/0 attestation\n" + canon(body)).encode("utf-8")
+
+
+def ssh_sign(keyfile, message):
+    r = subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(keyfile), "-n", SIG_NAMESPACE],
+                       input=message, capture_output=True)
+    if r.returncode:
+        sys.exit("ssh-keygen -Y sign failed: " + r.stderr.decode(errors="replace").strip())
+    return r.stdout.decode()
+
+
+def ssh_verify(pub, key_id, sig, message):
+    """True / False, or None when ssh-keygen is not available (signature unchecked)."""
+    with tempfile.TemporaryDirectory() as d:
+        allowed, sigf = Path(d) / "allowed", Path(d) / "sig"
+        allowed.write_text(f'{key_id} namespaces="{SIG_NAMESPACE}" {" ".join(pub.split()[:2])}\n')
+        sigf.write_text(sig)
+        try:
+            r = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", key_id, "-n", SIG_NAMESPACE,
+                                "-s", str(sigf)], input=message, capture_output=True)
+        except FileNotFoundError:
+            return None
+        return r.returncode == 0
 
 
 # ---------------------------------------------------------------- LaTeX: sources and statements
@@ -196,14 +233,14 @@ class Ledger:
             sys.exit(f"{cfgfile} not found")
         self.cfg = tomllib.loads(cfgfile.read_text())
         self.paper = paper
-        self.errors = []
+        self.errors, self.warnings = [], []
         self.load_human()
         self.load_lean()
         self.load_papers()
         self.build()
 
     def load_human(self):
-        self.claims, self.citations, self.assertions, self.attestations = {}, {}, {}, []
+        self.claims, self.citations, self.assertions, self.attestations, self.keys = {}, {}, {}, [], {}
         for f in sorted(self.dir.glob("*.toml")):
             if f.name == "ledger.toml":
                 continue
@@ -212,6 +249,7 @@ class Ledger:
             self.citations.update(t.get("citation", {}))
             self.assertions.update(t.get("assertion", {}))
             self.attestations += t.get("attestation", [])
+            self.keys.update(t.get("key", {}))
         for n, c in self.claims.items():
             if c.get("evidence", "E5") not in EVIDENCE:
                 self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
@@ -221,6 +259,11 @@ class Ledger:
                 self.errors.append(f"attestation on {a.get('claim')}: unknown level {a.get('level')!r}")
             elif a["level"] == "yellow" and not a.get("reason"):
                 self.errors.append(f"attestation on {a.get('claim')}: yellow needs a reason")
+        for k, key in self.keys.items():
+            try:
+                key["fingerprint"] = fingerprint(key["public"])
+            except Exception:
+                self.errors.append(f"key {k}: unreadable public key")
 
     @property
     def lockfile(self):
@@ -379,9 +422,18 @@ class Ledger:
                     continue
                 payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
                 deps[i] = []
+        for k, key in self.keys.items():
+            payload["key:" + k] = dict(kind="key", provenance="asserted", content={
+                x: key.get(x, "") for x in ("person", "public", "source", "url", "fetched", "revoked")}
+                | dict(vouched_by=sorted(key.get("vouched_by", []))))
+            deps["key:" + k] = []
         for name, pn in self.paper_nodes.items():
-            payload["paper:" + name] = dict(kind="paper-source", provenance="computed", content=pn)
-            deps["paper:" + name] = []
+            authors = self.cfg.get("paper", {}).get(name, {}).get("authors", [])
+            payload["paper:" + name] = dict(kind="paper-source", provenance="computed", content=dict(pn, authors=sorted(authors)))
+            deps["paper:" + name] = ["key:" + a for a in authors if a in self.keys]
+            for a in authors:
+                if a not in self.keys:
+                    self.errors.append(f"paper {name}: author key {a!r} not in keys")
         self.stmt = {}
         for n, c in self.claims.items():
             c["lean"] = self.expand_lean(c.get("lean", []))
@@ -415,9 +467,11 @@ class Ledger:
             if "claim:" + a.get("claim", "") not in payload:
                 self.errors.append(f"attestation {k}: unknown claim {a.get('claim')}")
                 continue
+            a["_sig"] = self.check_signature(k, a)
             payload[i] = dict(kind="attestation", provenance="asserted", content={
-                x: a.get(x, "") for x in ("claim", "person", "date", "level", "reason", "bound")} | dict(checklist=a.get("checklist", [])))
-            deps[i] = ["claim:" + a["claim"]]
+                x: a.get(x, "") for x in ("claim", "person", "date", "level", "reason", "bound", "key", "sig")}
+                | dict(checklist=a.get("checklist", [])))
+            deps[i] = ["claim:" + a["claim"]] + (["key:" + a["key"]] if a.get("key") in self.keys else [])
             self.attest_ids.append(i)
         self.full = merkle(payload, deps, "node")
         seen, todo = set(), [i for i, q in payload.items() if q["kind"] in ROOT_KINDS]
@@ -440,6 +494,21 @@ class Ledger:
         self.root_hash = H("root", [[i, self.full[i]] for i in sorted(payload)
                                     if payload[i]["kind"] in ROOT_KINDS])
         self.register = self.compute_register()
+
+    def check_signature(self, k, a):
+        """'unsigned' | 'signed' | 'invalid' | 'unknown-key' | 'revoked' | 'unchecked' for attestation k."""
+        if not a.get("sig"):
+            return "unsigned"
+        key = self.keys.get(a.get("key", ""))
+        if key is None:
+            self.warnings.append(f"attestation {k} on {a.get('claim')}: signed with unknown key {a.get('key')!r}; treated as unsigned")
+            return "unknown-key"
+        if key.get("revoked") and a.get("date", "") >= key["revoked"]:
+            return "revoked"
+        ok = ssh_verify(key["public"], a["key"], a["sig"], attestation_message(self.cfg.get("project", {}).get("name", "project"), a))
+        if ok is False:
+            self.warnings.append(f"attestation {k} on {a.get('claim')} by {a.get('person')}: SIGNATURE INVALID; it is ignored")
+        return "unchecked" if ok is None else ("signed" if ok else "invalid")
 
     def compute_register(self):
         own = {}
@@ -488,10 +557,18 @@ class Ledger:
         """Latest attestation per person on claim n -> list of (person, level, date, current?)."""
         latest = {}
         for a in self.attestations:
-            if a.get("claim") == n:
+            if a.get("claim") == n and a.get("_sig") not in ("invalid", "revoked"):
                 latest[a.get("person", "?")] = a
         cur = self.cspec.get(n)
         return [(p, a.get("level"), a.get("date", ""), a.get("bound") == cur) for p, a in sorted(latest.items())]
+
+    def signature_of(self, n, person):
+        """Signature state of the latest counted attestation by `person` on claim n."""
+        latest = None
+        for a in self.attestations:
+            if a.get("claim") == n and a.get("person", "?") == person and a.get("_sig") not in ("invalid", "revoked"):
+                latest = a
+        return latest.get("_sig", "unsigned") if latest else "unsigned"
 
     def lock(self):
         return dict(format=0, root=self.root_hash, toolchain=self.toolchain,
@@ -518,6 +595,8 @@ def cmd_status(L, args):
     for name, u in L.unresolved.items():
         if u:
             print(f"warning: paper {name}: could not resolve {', '.join(u)}", file=sys.stderr)
+    for w in L.warnings:
+        print("warning:", w, file=sys.stderr)
     for e in L.errors:
         print("error:", e, file=sys.stderr)
     return 1 if L.errors or (args.strict and stale) else 0
@@ -607,13 +686,24 @@ def cmd_tex(L, args):
         ls = L.lean_status(n)
         st = L.attestation_state(n)
         att = "; ".join(
-            f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}" for p, lvl, date, cur in st
+            f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{{L.signature_of(n, p)}}}"
+            for p, lvl, date, cur in st
         ) or "\\LedgerNoAtt"
         res = f"\\texttt{{{tex_esc(lab)}}}" + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
         rows.append(f"\\LedgerRow{{{res}}}{{{c.get('evidence', 'E5')}}}{{{L.stmt[n][1]}}}"
                     f"{{\\LedgerLeanCell{{{ls if ls != '-' else 'none'}}}}}{{{len(L.register[n])}}}{{{att}}}")
+    counted = [(n, p) for n in names for p, *_ in L.attestation_state(n)]
+    nsigned = sum(L.signature_of(n, p) == "signed" for n, p in counted)
+    keyrows = []
+    for i, q in sorted(L.payload.items()):
+        if q["kind"] == "key":
+            kc = q["content"]
+            keyrows.append(f"\\LedgerKeyRow{{{tex_esc(kc['person'])}}}{{{tex_esc(fingerprint(kc['public']))}}}"
+                           f"{{{tex_esc(kc.get('source') or 'paper')}}}{{{'revoked ' + tex_esc(kc['revoked']) if kc.get('revoked') else ''}}}%")
     cl = [f"% generated by ledger.py -P {L.paper} tex; do not edit. Excluded from the hashed source.",
-          f"\\def\\LedgerNClaims{{{len(names)}}}"]
+          f"\\def\\LedgerNClaims{{{len(names)}}}", f"\\def\\LedgerNAtt{{{len(counted)}}}",
+          f"\\def\\LedgerNSignedAtt{{{nsigned}}}", f"\\def\\LedgerNKeys{{{len(keyrows)}}}",
+          "\\def\\LedgerKeys{%"] + keyrows + ["}"]
     cl += [f"\\def\\LedgerN{k}{{{v}}}" for k, v in (("Green", cnt["green"]), ("Yellow", cnt["yellow"]),
            ("Conj", cnt["conjecture"]), ("Stale", cnt["stale"]), ("None", cnt["none"]), ("Assumes", assumes), ("Sorry", sorry))]
     # plain tabulars of CHUNK rows each: page breaks fall between them (longtable/supertabular fail in
@@ -663,6 +753,10 @@ def cmd_verify(L, args):
     return 1 if bad else 0
 
 
+def toml_record(table, rec):
+    return f"\n{table}\n" + "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in rec.items())
+
+
 def cmd_attest(L, args):
     if args.claim not in L.claims:
         sys.exit(f"unknown claim {args.claim}")
@@ -671,10 +765,64 @@ def cmd_attest(L, args):
     rec = dict(claim=args.claim, person=args.person, date=datetime.date.today().isoformat(), level=args.level,
                reason=args.reason or "", checklist=[x for x in (args.checklist or "").split(",") if x],
                bound=L.cspec[args.claim])
-    with open(L.dir / "attestations.toml", "a") as f:
-        f.write("\n[[attestation]]\n" + "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in rec.items()))
-    print(f"recorded {args.level} by {args.person} on {args.claim}, bound to {rec['bound'][:12]}")
+    extra = ""
+    if args.sign:
+        if not args.key:
+            sys.exit("--sign needs --key KEYID (a key registered with `addkey`, or --pub for a standalone file)")
+        pub = (L.keys.get(args.key) or {}).get("public") or (Path(args.pub).read_text().strip() if args.pub else None)
+        if not pub:
+            sys.exit(f"key {args.key!r} is not in ledger/keys.toml; register it with `addkey` or pass --pub FILE")
+        project = L.cfg.get("project", {}).get("name", "project")
+        rec["key"] = args.key
+        rec["sig"] = ssh_sign(args.sign, attestation_message(project, rec))
+        if ssh_verify(pub, args.key, rec["sig"], attestation_message(project, rec)) is not True:
+            sys.exit("the signature does not verify against the registered public key: wrong --sign file for this key?")
+        if args.out:  # a standalone file carries the key it was made with
+            extra = toml_record(f"[key.{args.key}]", dict(person=args.person, public=pub, source="attestation-file"))
+    out = Path(args.out) if args.out else L.dir / "attestations.toml"
+    with open(out, "a") as f:
+        f.write(extra + toml_record("[[attestation]]", rec))
+    print(f"recorded {args.level} by {args.person} on {args.claim}, bound to {rec['bound'][:12]}"
+          + (", signed" if "sig" in rec else "") + (f" -> {out}" if args.out else ""))
     return 0
+
+
+def cmd_addkey(L, args):
+    pub = Path(args.pub).read_text().strip() if Path(args.pub).exists() else args.pub.strip()
+    rec = dict(person=args.person, public=pub, source=args.source, url=args.url or "",
+               fetched=datetime.date.today().isoformat() if args.source == "url" else "",
+               vouched_by=[x for x in (args.vouched_by or "").split(",") if x])
+    rec = {k: v for k, v in rec.items() if v != "" and v != []}
+    with open(L.dir / "keys.toml", "a") as f:
+        f.write(toml_record(f"[key.{args.id}]", rec))
+    print(f"key {args.id} ({fingerprint(pub)}) for {args.person}, source {args.source}")
+    return 0
+
+
+def cmd_verify_attestation(L, args):
+    """Check a standalone attestation file against a lock file (hash only; no ledger sources needed)."""
+    t = tomllib.loads(Path(args.file).read_text())
+    lock = json.loads(Path(args.lock).read_text())
+    project = L.cfg.get("project", {}).get("name", "project")
+    bad = 0
+    for a in t.get("attestation", []):
+        claim = lock["claims"].get(a.get("claim"))
+        key = (t.get("key", {}) or {}).get(a.get("key", ""), None) or L.keys.get(a.get("key", ""))
+        state = []
+        state.append("statement matches the lock" if claim and claim["spec"] == a.get("bound")
+                     else "STATEMENT DIFFERS from the lock (stale or wrong version)")
+        bad += not (claim and claim["spec"] == a.get("bound"))
+        if not a.get("sig"):
+            state.append("unsigned")
+        elif key is None:
+            state.append("signed, but the file carries no key"); bad += 1
+        else:
+            ok = ssh_verify(key["public"], a["key"], a["sig"], attestation_message(project, a))
+            state.append(f"signature {'VALID' if ok else 'INVALID' if ok is False else 'unchecked (no ssh-keygen)'}"
+                         f" for key {fingerprint(key['public'])} (introduced by this file: check it came from {a.get('person')})")
+            bad += ok is False
+        print(f"{a.get('level', '?').upper()} by {a.get('person')} on {a.get('claim')} ({a.get('date')}): " + "; ".join(state))
+    return 1 if bad else 0
 
 
 def cmd_extract(L, args):
@@ -703,15 +851,25 @@ def main(argv=None):
     p = sub.add_parser("why"); p.add_argument("claim")
     p = sub.add_parser("attest"); p.add_argument("claim"); p.add_argument("--person", required=True)
     p.add_argument("--level", required=True, choices=LEVELS); p.add_argument("--reason"); p.add_argument("--checklist")
+    p.add_argument("--sign", metavar="PRIVATE_KEY", help="sign with this ssh key file (ssh-keygen -Y sign)")
+    p.add_argument("--key", help="id of the signing key in ledger/keys.toml")
+    p.add_argument("--pub", help="public key file (standalone attestations by someone who is not in keys.toml)")
+    p.add_argument("--out", help="write a standalone attestation file instead of appending to ledger/attestations.toml")
+    p = sub.add_parser("addkey"); p.add_argument("id"); p.add_argument("--person", required=True)
+    p.add_argument("--pub", required=True, help="public key file or line")
+    p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
+    p.add_argument("--url"); p.add_argument("--vouched-by")
+    p = sub.add_parser("verify-attestation"); p.add_argument("file"); p.add_argument("--lock", required=True)
     args = ap.parse_args(argv)
-    if args.cmd == "extract":  # the dump may not exist yet
+    if args.cmd in ("extract", "verify-attestation", "addkey"):  # no ledger build needed (the dump may not exist yet)
         L = Ledger.__new__(Ledger)
         L.root = Path(args.dir).resolve(); L.dir = L.root / "ledger"
-        L.cfg = tomllib.loads((L.dir / "ledger.toml").read_text()); L.errors = []; L.paper = args.paper
+        L.cfg = tomllib.loads((L.dir / "ledger.toml").read_text()); L.errors = []; L.warnings = []; L.paper = args.paper
         L.load_human()
+        L.keys = getattr(L, "keys", {})
     else:
         L = Ledger(args.dir, args.paper)
-    return globals()["cmd_" + args.cmd](L, args)
+    return globals()["cmd_" + args.cmd.replace("-", "_")](L, args)
 
 
 if __name__ == "__main__":

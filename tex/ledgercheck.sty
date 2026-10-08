@@ -48,19 +48,29 @@
 
 % ---- files ---------------------------------------------------------------
 \ifledgercheck@on
+  % found through TEXINPUTS (working tree) or in ./ledger/ next to the paper (a release)
+  \newcommand{\ledgercheck@input}[2]{%
+    \IfFileExists{ledger-\ledgercheck@paper-#1.tex}{\input{ledger-\ledgercheck@paper-#1.tex}#2}{%
+      \IfFileExists{ledger/ledger-\ledgercheck@paper-#1.tex}{\input{ledger/ledger-\ledgercheck@paper-#1.tex}#2}{}}}
   \AtBeginDocument{%
-    \IfFileExists{ledger-\ledgercheck@paper-root.tex}{%
-      \input{ledger-\ledgercheck@paper-root.tex}\ledgercheck@sealedtrue}{}%
-    \IfFileExists{ledger-\ledgercheck@paper-status.tex}{%
-      \input{ledger-\ledgercheck@paper-status.tex}}{}%
+    \ledgercheck@input{root}{\ledgercheck@sealedtrue}%
+    \ledgercheck@input{status}{}%
   }
 \fi
 
 % ---- cells ---------------------------------------------------------------
 \newcommand{\LedgerNoAtt}{\textit{not yet attested}}
-% \LedgerAtt{level}{person}{date}{current|stale}
-\newcommand{\LedgerAtt}[4]{%
-  \csname ledgercheck@lvl@#1\endcsname\ #2 #3\csname ledgercheck@st@#4\endcsname}
+% \LedgerAtt{level}{person}{date}{current|stale}{signature state}
+\newcommand{\LedgerAtt}[5]{%
+  \csname ledgercheck@lvl@#1\endcsname\ #2 #3\csname ledgercheck@st@#4\endcsname
+  \csname ledgercheck@sig@#5\endcsname}
+\newcommand{\ledgercheck@sig@signed}{\ {\scriptsize[signed]}}
+\newcommand{\ledgercheck@sig@unsigned}{}
+\expandafter\newcommand\csname ledgercheck@sig@unknown-key\endcsname{}
+\newcommand{\ledgercheck@sig@unchecked}{\ {\scriptsize[signature unchecked]}}
+\newcommand{\ledgercheck@sig@invalid}{}
+\newcommand{\ledgercheck@sig@revoked}{}
+\newcommand{\LedgerKeyRow}[4]{#1 & \texttt{#2} & #3 #4 \\}
 \newcommand{\ledgercheck@lvl@green}{{\color{ledgergreen}\textbf{GREEN}}}
 \newcommand{\ledgercheck@lvl@yellow}{{\color{ledgeryellow}\textbf{YELLOW}}}
 \newcommand{\ledgercheck@lvl@conjecture}{{\color{ledgerred}\textbf{CONJECTURE}}}
@@ -103,7 +113,8 @@
   \LedgerNConj{} \mbox{\ledgercheck@lvl@conjecture} (a different kind of statement, not a worse grade);
   \LedgerNStale{} with only \ledgercheck@st@stale{} attestations; \LedgerNNone{} not yet attested.
   Lean status: \LedgerNAssumes{} rest on a hypothesis that is assumed, not proved; \LedgerNSorry{} contain
-  \texttt{sorry}.}
+  \texttt{sorry}.
+  \ifnum\LedgerNAtt>0 \LedgerNSignedAtt{} of \LedgerNAtt{} attestations carry a valid signature.\fi}
 
 \newcommand{\ledgerappendix}{%
   \ledgercheck@placedtrue
@@ -140,6 +151,14 @@
 
     \par\medskip
     {\footnotesize\LedgerChunks}
+    \ifnum\LedgerNKeys>0
+      \par\medskip\noindent\textbf{Keys.} Signatures are optional and use OpenSSH keys. A key is introduced
+      by this paper (the authors' keys), by vouching, or by a recorded source such as a homepage; there is no
+      certificate authority, so the binding of a key to a person rests on this list being published under
+      the authors' names.\par\smallskip
+      {\footnotesize\noindent\begin{tabular}{@{}lll@{}} Person & Fingerprint & Introduced by\\\midrule
+        \LedgerKeys\end{tabular}}\par\medskip
+    \fi
     \noindent Evid.: E1 checked proof, E2 checked certificate, E3 exact computation, E4 numerical
     evidence, E5 assertion. Stmt.: \texttt{tex} = taken from this paper's source by its label,
     \texttt{manual} = written in the ledger. Lean: \emph{checked} = accepted by the Lean kernel with the

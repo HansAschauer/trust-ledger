@@ -10,7 +10,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `environment` |
+| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `environment` |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -105,6 +105,25 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 
 An attestation is **stale** when `bound` differs from the claim's current spec hash. Stale
 attestations are reported, never silently rewritten.
+
+### 3.1 Keys and signatures (optional)
+
+* `[key.<id>]`: `person`, `public` (an OpenSSH public key line), `source` (`paper` = introduced by the
+  authors in this ledger, `vouched` = an author vouches, `url` = fetched from a page, with `url` and `fetched`),
+  optional `vouched_by` (key ids) and `revoked` (date). Key nodes are `asserted` and hashed; a paper lists its
+  author keys in `[paper.X] authors = [...]`, which makes them dependencies of the paper-source node.
+* An attestation may carry `key` (a key id) and `sig`. The signed bytes are
+  `"trust-ledger/0 attestation\n" + canonical_json({claim, person, date, level, reason, bound, checklist, project})`,
+  signed with `ssh-keygen -Y sign -n trust-ledger-attestation`. The signature state is `signed` (valid),
+  `unsigned`, `unknown-key` (counted as unsigned, with a warning), `unchecked` (no ssh-keygen),
+  `revoked` (the attestation date is not before the key's `revoked` date) or `invalid`. Revoked and invalid
+  attestations are ignored and reported. Attestation nodes include `key` and `sig`, so the root covers them.
+* There is no certificate authority: the binding of a key to a person rests on the key list being published
+  with the root under the authors' names (or on a source URL the reader can fetch again).
+* A standalone attestation file (for example by an independent reviewer after publication) is a TOML fragment
+  with one `[key.<id>]` and one `[[attestation]]`; `verify-attestation FILE --lock lock-<paper>.json` checks the
+  signature against the key in the file and `bound` against the claim's spec hash in the lock file, without the
+  ledger sources. A later version of the paper can include such a file in `ledger/`.
 
 ## 4. Register
 

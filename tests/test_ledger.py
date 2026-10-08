@@ -1,4 +1,4 @@
-import json, shutil, sys, tempfile, unittest
+import json, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -178,6 +178,77 @@ class Latex(Toy):
 
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
+class Signing(Toy):
+    def keygen(self, name):
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", name, "-f", str(self.tmp / name), "-q"], check=True)
+        return self.tmp / name
+
+    def main(self, *args):
+        return lg.main(["-C", str(self.p), *args])
+
+    def signed_setup(self):
+        k = self.keygen("alice")
+        self.main("addkey", "alice", "--person", "Alice", "--pub", str(k) + ".pub", "--source", "paper")
+        self.main("attest", "lem-succ", "--person", "Alice", "--level", "green", "--sign", str(k), "--key", "alice")
+        return k
+
+    def test_signed_attestation_verifies_and_is_in_the_root(self):
+        r_unsigned = self.L().root_hash
+        self.signed_setup()
+        L = self.L()
+        self.assertEqual(L.signature_of("lem-succ", "Alice"), "signed")
+        self.assertEqual(L.warnings, [])
+        self.assertNotEqual(L.root_hash, r_unsigned)
+        self.assertIn("key:alice", L.payload)
+
+    def test_tampered_attestation_is_ignored_with_a_warning(self):
+        self.signed_setup()
+        f = self.p / "ledger" / "attestations.toml"
+        f.write_text(f.read_text().replace("A1", "A2").replace('level = "green"', 'level = "green"').replace(
+            "date = ", "date = \"1999-01-01\" #", 1))
+        L = self.L()
+        self.assertEqual(L.attestation_state("lem-succ"), [])                 # does not count
+        self.assertTrue(any("SIGNATURE INVALID" in w for w in L.warnings))
+
+    def test_unknown_and_revoked_keys(self):
+        k = self.signed_setup()
+        keys = self.p / "ledger" / "keys.toml"
+        text = keys.read_text()
+        keys.write_text(text + 'revoked = "2000-01-01"\n')                    # revoked before the attestation date
+        self.assertEqual(self.L().attestation_state("lem-succ"), [])
+        keys.unlink()
+        L = self.L()
+        self.assertEqual(L.signature_of("lem-succ", "Alice"), "unknown-key")
+        self.assertEqual(len(L.attestation_state("lem-succ")), 1)              # still an (unsigned) attestation
+        self.assertTrue(any("unknown key" in w for w in L.warnings))
+
+    def test_standalone_attestation_file_checked_against_lock(self):
+        self.main("-P", "toy", "lock")
+        k = self.keygen("bob")
+        out = self.tmp / "bob.att.toml"
+        self.assertEqual(self.main("attest", "lem-succ", "--person", "Bob", "--level", "yellow", "--reason", "spec",
+                                   "--sign", str(k), "--key", "bob", "--pub", str(k) + ".pub", "--out", str(out)), 0)
+        lock = str(self.p / "ledger" / "lock-toy.json")
+        self.assertEqual(self.main("-P", "toy", "verify-attestation", str(out), "--lock", lock), 0)
+        bad = self.tmp / "bad.toml"
+        bad.write_text(out.read_text().replace('"spec"', '"gap"'))               # content changed after signing
+        self.assertEqual(self.main("-P", "toy", "verify-attestation", str(bad), "--lock", lock), 1)
+        # statement changed since: the lock no longer matches
+        self.tex_edit = (self.p / "paper" / "chapters" / "results.tex")
+        self.tex_edit.write_text(self.tex_edit.read_text().replace("f(n) > n", "f(n) \\ge n"))
+        self.main("-P", "toy", "lock")
+        self.assertEqual(self.main("-P", "toy", "verify-attestation", str(out), "--lock", lock), 1)
+
+    def test_tex_shows_signed_and_keys(self):
+        self.signed_setup()
+        self.main("-P", "toy", "tex")
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("{signed}", st)
+        self.assertIn("\\LedgerKeyRow{Alice}{SHA256:", st)
+        self.assertIn("\\def\\LedgerNSignedAtt{1}", st)
 
 
 class Merkle(unittest.TestCase):
