@@ -12,11 +12,12 @@ Single file, Python >= 3.11, standard library only. Normative format: docs/FORMA
 
 DIR is the project root; it must contain ledger/ledger.toml.
 """
-import argparse, datetime, hashlib, json, subprocess, sys, tomllib
+import argparse, datetime, hashlib, json, re, subprocess, sys, tomllib
 from pathlib import Path
 
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 LEVELS = ("green", "yellow", "conjecture")
+ROOT_KINDS = ("claim", "attestation", "environment", "paper-source")
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 
 
@@ -82,18 +83,123 @@ def merkle(payload, deps, tag):
     return h
 
 
+# ---------------------------------------------------------------- LaTeX: sources and statements
+STATEMENT_ENVS = {"theorem", "proposition", "lemma", "corollary", "definition", "example", "remark",
+                  "conjecture", "claim", "fact", "observation", "assumption", "problem"}
+MATH_ENVS = {"equation", "align", "gather", "multline", "eqnarray", "flalign", "alignat"}
+INPUT_RE = re.compile(r"\\(?:input|include)\s*\{([^}]+)\}")
+BIB_RE = re.compile(r"\\bibliography\s*\{([^}]+)\}")
+ENV_RE = re.compile(r"\\(begin|end)\{([A-Za-z]+\*?)\}")
+
+
+def strip_comments(text):
+    """Remove TeX comments: a % that is not preceded by an odd number of backslashes."""
+    out = []
+    for line in text.split("\n"):
+        i = 0
+        while i < len(line):
+            if line[i] == "\\":
+                i += 2
+                continue
+            if line[i] == "%":
+                line = line[:i]
+                break
+            i += 1
+        out.append(line)
+    return "\n".join(out)
+
+
+def tex_sources(main, search, excluded):
+    """The .tex files reached from `main` by \\input/\\include (in order) and the .bib files named by
+    \\bibliography; files below an excluded directory are left out. Returns (paths, unresolved names)."""
+    def resolve(name, cur, exts):  # like TeX: relative to the directory LaTeX runs in, not to `cur`
+        for base in [Path(main).resolve().parent, *search]:
+            for e in exts:
+                cand = base / (name if (e == "" or name.endswith(e)) else name + e)
+                if cand.is_file():
+                    return cand.resolve()
+        return None
+
+    def is_excluded(path):
+        return any(path == x or x in path.parents for x in excluded)
+
+    files, unresolved, todo = [], [], [Path(main).resolve()]
+    while todo:
+        cur = todo.pop(0)
+        if cur in files or is_excluded(cur):
+            continue
+        files.append(cur)
+        if cur.suffix != ".tex":
+            continue
+        text = strip_comments(cur.read_text(errors="replace"))
+        for m in INPUT_RE.finditer(text):
+            r = resolve(m.group(1).strip(), cur, ("", ".tex"))
+            if r is None:
+                unresolved.append(m.group(1).strip())
+            else:
+                todo.append(r)
+        for m in BIB_RE.finditer(text):
+            for name in m.group(1).split(","):
+                r = resolve(name.strip(), cur, (".bib",))
+                if r is None:
+                    unresolved.append(name.strip() + ".bib")
+                else:
+                    todo.append(r)
+    return files, sorted(set(unresolved))
+
+
+def find_environments(text):
+    """Statement and display-math environments of `text`: (name, body_start, body_end)."""
+    stack, envs = [], []
+    for m in ENV_RE.finditer(text):
+        kind, name = m.group(1), m.group(2)
+        base = name.rstrip("*")
+        if base not in STATEMENT_ENVS and base not in MATH_ENVS:
+            continue
+        if kind == "begin":
+            stack.append((name, m.end()))
+        else:
+            for k in range(len(stack) - 1, -1, -1):
+                if stack[k][0] == name:
+                    envs.append((name, stack[k][1], m.start()))
+                    del stack[k:]
+                    break
+    return envs
+
+
+def statement_of(label, parsed):
+    """Text of the innermost statement/math environment containing \\label{label}, whitespace
+    normalised, comments and labels removed. parsed: [(text, envs)]. Returns (text|None, problem|None)."""
+    pat = re.compile(r"\\label\{" + re.escape(label) + r"\}")
+    for text, envs in parsed:
+        m = pat.search(text)
+        if not m:
+            continue
+        best = None
+        for e in envs:
+            if e[1] <= m.start() < e[2] and (best is None or e[1] > best[1]):
+                best = e
+        if best is None:
+            return None, f"label {label} is not inside a theorem-like or display-math environment"
+        body = re.sub(r"\\label\{[^}]*\}", "", text[best[1]:best[2]])
+        return f"{best[0]}: " + " ".join(body.split()), None
+    return None, f"label {label} not found in the paper source"
+
+
 # ---------------------------------------------------------------- loading
 class Ledger:
-    def __init__(self, root):
+    def __init__(self, root, paper=None):
         self.root = Path(root).resolve()
         self.dir = self.root / "ledger"
         cfgfile = self.dir / "ledger.toml"
         if not cfgfile.exists():
             sys.exit(f"{cfgfile} not found")
         self.cfg = tomllib.loads(cfgfile.read_text())
+        self.paper = paper
         self.errors = []
         self.load_human()
         self.load_lean()
+        self.load_papers()
         self.build()
 
     def load_human(self):
@@ -109,11 +215,72 @@ class Ledger:
         for n, c in self.claims.items():
             if c.get("evidence", "E5") not in EVIDENCE:
                 self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
+        self.apply_scope()
         for a in self.attestations:
             if a.get("level") not in LEVELS:
                 self.errors.append(f"attestation on {a.get('claim')}: unknown level {a.get('level')!r}")
             elif a["level"] == "yellow" and not a.get("reason"):
                 self.errors.append(f"attestation on {a.get('claim')}: yellow needs a reason")
+
+    @property
+    def lockfile(self):
+        return self.dir / ("lock.json" if self.paper is None else f"lock-{self.paper}.json")
+
+    def apply_scope(self):
+        """With a paper selected keep its claims (and those without a paper), plus every claim they use."""
+        papers = self.cfg.get("paper", {})
+        if self.paper is None:
+            return
+        if papers and self.paper not in papers:
+            self.errors.append(f"unknown paper {self.paper!r}; configured: {', '.join(sorted(papers))}")
+        keep = {n for n, c in self.claims.items() if c.get("paper") in (None, self.paper)}
+        todo = list(keep)
+        while todo:
+            for u in self.claims[todo.pop()].get("uses", []):
+                if u in self.claims and u not in keep:
+                    keep.add(u); todo.append(u)
+        self.claims = {n: c for n, c in self.claims.items() if n in keep}
+        self.attestations = [a for a in self.attestations if a.get("claim") in keep]
+        self.assertions = {k: v for k, v in self.assertions.items() if v.get("claim") in keep}
+        used = {x for c in self.claims.values() for x in c.get("cites", [])}
+        self.citations = {k: v for k, v in self.citations.items() if k in used}
+
+    def load_papers(self):
+        """Paper-source nodes and the parsed statement environments of each paper."""
+        self.paper_nodes, self.parsed, self.unresolved = {}, {}, {}
+        papers = self.cfg.get("paper", {})
+        excluded = [(self.root / d).resolve() for d in self.cfg.get("generated", {}).get("dirs", [])]
+        for name, pc in papers.items():
+            if self.paper is not None and name != self.paper:
+                continue
+            main = self.root / pc["main"]
+            if not main.is_file():
+                self.errors.append(f"paper {name}: {main} not found")
+                continue
+            search = [(self.root / d).resolve() for d in pc.get("texinputs", [])]
+            files, unresolved = tex_sources(main, search, excluded)
+            self.unresolved[name] = unresolved
+            rel = lambda f: str(f.relative_to(self.root)) if self.root in f.parents else str(f)
+            self.paper_nodes[name] = dict(main=pc["main"], files={rel(f): sha_file(f) for f in files},
+                                          unresolved=unresolved)
+            self.parsed[name] = [(t, find_environments(t)) for t in
+                                 (strip_comments(f.read_text(errors="replace")) for f in files if f.suffix == ".tex")]
+
+    def statement(self, n, c):
+        """(text, source): the claim's statement from the paper's LaTeX if it has labels, else its `text`."""
+        labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
+        sources = self.parsed.get(c.get("paper")) if c.get("paper") in self.parsed else \
+            [x for v in self.parsed.values() for x in v]
+        if not labels or not sources:
+            return c.get("text", ""), "manual"
+        parts = []
+        for lab in labels:
+            t, problem = statement_of(lab, sources)
+            if problem:
+                self.errors.append(f"claim {n}: {problem}")
+            else:
+                parts.append(f"[{lab}] {t}")
+        return "\n".join(parts), "tex"
 
     def load_lean(self):
         self.decls, self.toolchain = {}, ""
@@ -177,8 +344,13 @@ class Ledger:
                     continue
                 payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
                 deps[i] = []
+        for name, pn in self.paper_nodes.items():
+            payload["paper:" + name] = dict(kind="paper-source", provenance="computed", content=pn)
+            deps["paper:" + name] = []
+        self.stmt = {}
         for n, c in self.claims.items():
             c["lean"] = self.expand_lean(c.get("lean", []))
+            self.stmt[n] = self.statement(n, c)
         for n, c in self.claims.items():
             i = "claim:" + n
             d = []
@@ -200,7 +372,7 @@ class Ledger:
                 else:
                     self.errors.append(f"claim {n}: unknown claim {u} in uses")
             payload[i] = dict(kind="claim", provenance="asserted", content=dict(
-                text=c.get("text", ""), label=c.get("label", ""), evidence=c.get("evidence", "E5")))
+                text=self.stmt[n][0], source=self.stmt[n][1], label=c.get("label", ""), evidence=c.get("evidence", "E5")))
             deps[i] = sorted(set(d))
         self.attest_ids = []
         for k, a in enumerate(self.attestations):
@@ -213,18 +385,25 @@ class Ledger:
             deps[i] = ["claim:" + a["claim"]]
             self.attest_ids.append(i)
         self.full = merkle(payload, deps, "node")
+        seen, todo = set(), [i for i, q in payload.items() if q["kind"] in ROOT_KINDS]
+        while todo:  # keep only what the roots rest on (matters when a paper is selected)
+            i = todo.pop()
+            if i not in seen:
+                seen.add(i); todo += deps.get(i, [])
+        payload = {i: q for i, q in payload.items() if i in seen}
+        self.full = {i: h for i, h in self.full.items() if i in seen}
         self.payload, self.deps, self.env = payload, deps, env
         # spec hashes of declarations, then of claims
         self.spec = merkle(self.spec_payload, self.spec_deps, "spec")
         cp, cd = {}, {}
         for n, c in self.claims.items():
-            cp[n] = dict(text=c.get("text", ""),
+            cp[n] = dict(text=self.stmt[n][0],
                          lean=[[x, self.spec.get("lean:" + x, "")] for x in sorted(c.get("lean", []))],
                          others=[[i, self.full[i]] for i in sorted(deps["claim:" + n]) if not i.startswith(("lean:", "claim:"))])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
         self.root_hash = H("root", [[i, self.full[i]] for i in sorted(payload)
-                                    if payload[i]["kind"] in ("claim", "attestation", "environment")])
+                                    if payload[i]["kind"] in ROOT_KINDS])
         self.register = self.compute_register()
 
     def compute_register(self):
@@ -288,18 +467,22 @@ class Ledger:
 # ---------------------------------------------------------------- commands
 def cmd_status(L, args):
     word = {"green": "GREEN", "yellow": "YELLOW", "conjecture": "CONJECTURE"}
-    rows = [("claim", "evid", "lean", "attestation", "register")]
+    rows = [("claim", "evid", "stmt", "lean", "attestation", "register")]
     stale = 0
     for n in sorted(L.claims):
         att = []
         for p, lvl, date, cur in L.attestation_state(n):
             att.append(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}")
             stale += not cur
-        rows.append((n, L.claims[n].get("evidence", "E5"), L.lean_status(n), "; ".join(att) or "none", str(len(L.register[n]))))
-    w = [max(len(r[i]) for r in rows) for i in range(5)]
+        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], L.lean_status(n), "; ".join(att) or "none",
+                     str(len(L.register[n]))))
+    w = [max(len(r[i]) for r in rows) for i in range(6)]
     for r in rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
-    print(f"\nroot {L.root_hash}")
+    print(f"\nroot {L.root_hash}" + (f"  (paper {L.paper})" if L.paper else ""))
+    for name, u in L.unresolved.items():
+        if u:
+            print(f"warning: paper {name}: could not resolve {', '.join(u)}", file=sys.stderr)
     for e in L.errors:
         print("error:", e, file=sys.stderr)
     return 1 if L.errors or (args.strict and stale) else 0
@@ -310,7 +493,7 @@ def cmd_why(L, args):
     if n not in L.claims:
         sys.exit(f"unknown claim {n}")
     c = L.claims[n]
-    print(f"{n}: {c.get('text', '')}\n  evidence {c.get('evidence', 'E5')}, lean {L.lean_status(n)}, spec {L.cspec[n][:12]}")
+    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}, lean {L.lean_status(n)}, spec {L.cspec[n][:12]}")
     print("  rests on:")
     seen, todo = set(), list(L.deps["claim:" + n])
     while todo:
@@ -332,15 +515,15 @@ def cmd_lock(L, args):
         for e in L.errors:
             print("error:", e, file=sys.stderr)
         return 1
-    (L.dir / "lock.json").write_text(json.dumps(L.lock(), indent=1, sort_keys=True) + "\n")
+    L.lockfile.write_text(json.dumps(L.lock(), indent=1, sort_keys=True) + "\n")
     print(L.root_hash)
     return 0
 
 
 def cmd_verify(L, args):
-    f = L.dir / "lock.json"
+    f = L.lockfile
     if not f.exists():
-        sys.exit("no lock.json: run `lock` first")
+        sys.exit(f"no {f.name}: run `lock` first")
     old, new, bad = json.loads(f.read_text()), L.lock(), list(L.errors)
     for i in sorted(set(old["nodes"]) | set(new["nodes"])):
         a, b = old["nodes"].get(i), new["nodes"].get(i)
@@ -392,6 +575,7 @@ def cmd_extract(L, args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-C", dest="dir", default=".")
+    ap.add_argument("-P", "--paper", default=None, help="restrict to the claims of one configured paper (own root and lock file)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("status"); p.add_argument("--strict", action="store_true")
     sub.add_parser("lock"); sub.add_parser("verify"); sub.add_parser("extract")
@@ -402,10 +586,10 @@ def main(argv=None):
     if args.cmd == "extract":  # the dump may not exist yet
         L = Ledger.__new__(Ledger)
         L.root = Path(args.dir).resolve(); L.dir = L.root / "ledger"
-        L.cfg = tomllib.loads((L.dir / "ledger.toml").read_text()); L.errors = []
+        L.cfg = tomllib.loads((L.dir / "ledger.toml").read_text()); L.errors = []; L.paper = args.paper
         L.load_human()
     else:
-        L = Ledger(args.dir)
+        L = Ledger(args.dir, args.paper)
     return globals()["cmd_" + args.cmd](L, args)
 
 

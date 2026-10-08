@@ -10,7 +10,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `file`, `claim`, `citation`, `assertion`, `environment` |
+| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `environment` |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -65,6 +65,30 @@ every claim that `uses` it.
 `value_term`, `proof_term`, axioms, sorry, assumptions. A theorem without a proof term is an
 error, not an empty proof.
 
+### 2.4 Paper source and statements
+
+A `paper-source` node (`computed`) has content `{main, files: {path: sha256}, unresolved: [...]}`.
+`files` is `main` plus every file reached by `\input`/`\include` (resolved like TeX: relative to the
+directory of `main`, then the configured `texinputs`; `.tex` appended when missing) and every `.bib`
+named by `\bibliography`, in raw bytes, **minus everything below a `generated` directory**. Generated
+files (the root file, the status table) are derived from the ledger, so hashing them would be circular.
+Names that cannot be resolved are listed in `unresolved`, not silently ignored.
+
+A claim with `labels` (or `label`) takes its statement from the paper: for each label, the text of the
+innermost statement environment (`theorem`, `lemma`, ... ) or display-math environment containing
+`\label{...}`, with comments and `\label`s removed and whitespace collapsed, prefixed by the
+environment name and the label. The concatenation is the claim's `text` (source `tex`); without labels
+the hand-written `text` is used (source `manual`). Macros are not expanded. A label that cannot be found
+is an error. Because the text enters the claim's spec hash, **editing a theorem in the paper resets the
+attestations on it**, while edits to prose or comments change only the paper-source node and the root.
+
+### 2.5 Scopes
+
+With a paper selected (`-P name`) the ledger keeps the claims whose `paper` is that paper or unset, plus
+every claim they `uses`, and only the nodes these rest on. Each paper has its own root and its own lock
+file (`lock-<paper>.json`; `lock.json` without a scope), so changes to the other paper's claims do not
+change this paper's root. Root kinds are `claim`, `attestation`, `environment` and `paper-source`.
+
 ## 3. Human files
 
 Human-written nodes live in TOML files below `ledger/`, one table per node (see
@@ -97,7 +121,7 @@ attestations are reported, never silently rewritten.
 
 ## 5. Root and lock file
 
-`root = H("root", [[n.id, full(n)] for all nodes of kind claim, attestation or environment, sorted by id])`.
+`root = H("root", [[n.id, full(n)] for all nodes of kind claim, attestation, environment or paper-source, sorted by id])`.
 Citations, assertions, files and Lean declarations are covered through the claims that depend on them.
 
 `ledger/lock.json` stores all computed hashes and the root. `verify` recomputes everything from

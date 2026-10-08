@@ -1,18 +1,21 @@
 [claim.lem-succ]
 text = "For every n, f(n) > n."
 label = "lem:succ"
+paper = "toy"
 evidence = "E1"
 lean = ["Toy.lem"]
 
 [claim.thm-twice]
 text = "Under the Banach property, f(f(n)) > n."
 label = "thm:twice"
+paper = "toy"
 evidence = "E1"
 lean = ["Toy.thm"]
 uses = ["lem-succ"]
 cites = ["banach"]
 
 [claim.conj-general]
+paper = "toy"
 text = "The statement holds for all iterates."
 evidence = "E5"
 uses = ["thm-twice"]
@@ -25,3 +28,14 @@ source = "Thm 2.1"
 [assertion.conj-general-hint]
 claim = "conj-general"
 text = "Checked numerically for k <= 10 only."
+
+[claim.eq-f]
+text = "defining equation"
+label = "eq:f"
+paper = "toy"
+evidence = "E5"
+
+[claim.other-paper]
+text = "Belongs to another paper."
+paper = "other"
+evidence = "E5"

@@ -4,3 +4,9 @@ name = "toy"
 [lean]
 dump = "lean.json"          # produced by the Lean extractor; hand-made here
 # extract = "./run.sh dump"  # reads declaration names on stdin, prints the JSON dump
+
+[paper.toy]
+main = "paper/main.tex"
+
+[generated]
+dirs = ["paper/ledger"]   # written by the ledger; never part of the hashed source
