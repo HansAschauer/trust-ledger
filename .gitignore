@@ -15,3 +15,5 @@ paper/*.blg
 paper/*.fdb_latexmk
 paper/*.fls
 paper/*.pdf
+
+paper/build/
