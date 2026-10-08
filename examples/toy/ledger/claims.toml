@@ -39,3 +39,9 @@ evidence = "E5"
 text = "Belongs to another paper."
 paper = "other"
 evidence = "E5"
+
+# The theorem is proved in Lean given `Toy.BanachProp`; the paper cites it as a known theorem (lem:banach).
+[hypothesis."Toy.BanachProp"]
+label = "lem:banach"
+paper = "toy"
+cites = ["banach"]

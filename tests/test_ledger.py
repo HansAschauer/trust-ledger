@@ -194,6 +194,83 @@ class Latex(Toy):
             lg.main(["-C", str(self.p), "-P", "toy", "status"])
         self.assertIn("shows an older root", err.getvalue())
 
+    def test_row_references_carry_type_and_number(self):
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("Lemma~\\ref{lem:succ}", st)
+        self.assertIn("Equation~(\\ref{eq:f})", st)          # an equation is cited by type and number, not by label alone
+        self.assertIn("Theorem~\\ref{thm:twice}", st)
+
+    def test_hypothesis_is_in_scope_with_statement_from_the_paper(self):
+        L = self.L()
+        self.assertEqual(L.scope_hyps, ["Toy.BanachProp"])
+        self.assertIn("complete normed space", L.hstmt["Toy.BanachProp"][0])
+        self.assertEqual(L.hypothesis_state("Toy.BanachProp"), [])         # honest default: not attested
+        self.assertFalse(L.known_theorem("Toy.BanachProp"))
+
+    def test_known_theorem_attestation(self):
+        self.assertEqual(lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp",
+                                  "--person", "X", "--level", "green", "--checklist", "H1,H2,H3"]), 0)
+        L = self.L()
+        self.assertTrue(L.known_theorem("Toy.BanachProp"))
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("LedgerLeanCell{assumes-known}", st)
+        self.assertIn("\\def\\LedgerNHypKnown{1}", st)
+        self.assertIn("\\LedgerHypRow{Lemma~\\ref{lem:banach}}", st)
+        # the register entry stays: the formalisation still assumes it
+        self.assertIn("hyp:Toy.BanachProp", L.register["thm-twice"])
+
+    def test_known_theorem_goes_stale_when_text_or_source_changes(self):
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
+        self.tex("chapters/results.tex", lambda t: t.replace("complete normed space", "complete normed algebra"))
+        L = self.L()
+        self.assertFalse(L.known_theorem("Toy.BanachProp"))                 # the statement in the paper changed
+        self.assertEqual([c for *_, c in L.hypothesis_state("Toy.BanachProp")], [False])
+        self.tex("chapters/results.tex", lambda t: t.replace("complete normed algebra", "complete normed space"))
+        self.assertTrue(self.L().known_theorem("Toy.BanachProp"))           # restored: current again
+        f = self.p / "ledger" / "claims.toml"                                # the cited source changed
+        f.write_text(f.read_text().replace("Every complete normed space satisfies BanachProp.", "Something else."))
+        self.assertFalse(self.L().known_theorem("Toy.BanachProp"))
+
+    def test_attest_needs_exactly_one_target(self):
+        with self.assertRaises(SystemExit):
+            lg.main(["-C", str(self.p), "-P", "toy", "attest", "--person", "X", "--level", "green"])
+        with self.assertRaises(SystemExit):
+            lg.main(["-C", str(self.p), "-P", "toy", "attest", "lem-succ", "--hypothesis", "Toy.BanachProp",
+                     "--person", "X", "--level", "green"])
+        with self.assertRaises(SystemExit):
+            lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "No.Such", "--person", "X", "--level", "green"])
+
+    @unittest.skipUnless(shutil.which("pdflatex"), "needs pdflatex")
+    def test_package_compiles_in_a_minimal_document(self):
+        """The package must not depend on macros of the host paper (it once used the paper's own \\Lean)."""
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        (self.p / "paper" / "min.tex").write_text(
+            "\\documentclass{article}\n\\usepackage[paper=toy]{ledgercheck}\n"
+            "\\newtheorem{lemma}{Lemma}\\newtheorem{theorem}{Theorem}\n\\begin{document}\\input{chapters/results}\\end{document}\n")
+        import os
+        env = dict(os.environ, TEXINPUTS=str(ROOT / "tex") + "//:")
+        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "min.tex"], cwd=self.p / "paper",
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout[-800:])
+        subprocess.run(["pdflatex", "-interaction=nonstopmode", "min.tex"], cwd=self.p / "paper", env=env, capture_output=True)
+        text = subprocess.run(["pdftotext", "min.pdf", "-"], cwd=self.p / "paper", capture_output=True, text=True).stdout
+        self.assertIn("Evidence ledger", text)
+        self.assertIn("Hypotheses", text)
+        self.assertIn("known thm.", text)
+
+    def test_rows_follow_the_compiled_document_not_the_file_order(self):
+        # a label that sits in main.tex AFTER the \\input line is later in the document than the chapter's labels
+        self.tex("main.tex", lambda t: t.replace("\\bibliographystyle", "\\begin{lemma}\\label{lem:late}Late.\\end{lemma}\n\\bibliographystyle"))
+        f = self.p / "ledger" / "claims.toml"
+        f.write_text(f.read_text() + '\n[claim.late]\nlabels = ["lem:late"]\npaper = "toy"\nevidence = "E5"\ntext = "x"\n')
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertLess(st.index("lem:succ"), st.index("lem:late"))      # chapter (inputted earlier) first
+        self.assertLess(st.index("eq:f"), st.index("lem:late"))
+
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
 
@@ -259,6 +336,21 @@ class Signing(Toy):
         self.tex_edit.write_text(self.tex_edit.read_text().replace("f(n) > n", "f(n) \\ge n"))
         self.main("-P", "toy", "lock")
         self.assertEqual(self.main("-P", "toy", "verify-attestation", str(out), "--lock", lock), 1)
+
+    def test_signed_hypothesis_attestation_and_standalone_check(self):
+        k = self.keygen("carol")
+        self.main("addkey", "carol", "--person", "Carol", "--pub", str(k) + ".pub")
+        self.assertEqual(self.main("attest", "--hypothesis", "Toy.BanachProp", "--person", "Carol", "--level", "green",
+                                   "--sign", str(k), "--key", "carol"), 0)
+        L = self.L()
+        self.assertTrue(L.known_theorem("Toy.BanachProp"))
+        self.assertEqual(L.warnings, [])
+        self.main("-P", "toy", "lock")
+        out = self.tmp / "carol.att.toml"
+        self.main("attest", "--hypothesis", "Toy.BanachProp", "--person", "Carol", "--level", "green", "--sign", str(k),
+                  "--key", "carol", "--pub", str(k) + ".pub", "--out", str(out))
+        self.assertEqual(self.main("-P", "toy", "verify-attestation", str(out), "--lock",
+                                   str(self.p / "ledger" / "lock-toy.json")), 0)
 
     def test_tex_shows_signed_and_keys(self):
         self.signed_setup()

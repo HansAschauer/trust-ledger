@@ -52,6 +52,7 @@ python3 ledger.py addkey ID --person NAME --pub KEY.pub     # register an ssh ke
 python3 ledger.py attest CLAIM --person NAME --level green --sign ~/.ssh/id_ed25519 --key ID
 python3 ledger.py attest CLAIM ... --out me.att.toml --pub KEY.pub   # standalone attestation file
 python3 ledger.py -P NAME verify-attestation me.att.toml --lock ledger/lock-NAME.json
+python3 ledger.py attest --hypothesis NAME --person NAME --level green   # "this hypothesis is a known theorem"
 python3 ledger.py lock              # write lock.json, print the root
 python3 ledger.py verify            # recompute, compare with lock.json
 ```

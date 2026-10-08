@@ -10,7 +10,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `environment` |
+| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `environment` |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -124,6 +124,24 @@ attestations are reported, never silently rewritten.
   with one `[key.<id>]` and one `[[attestation]]`; `verify-attestation FILE --lock lock-<paper>.json` checks the
   signature against the key in the file and `bound` against the claim's spec hash in the lock file, without the
   ledger sources. A later version of the paper can include such a file in `ledger/`.
+
+### 3.2 Hypotheses
+
+A result proved in Lean *given* a hypothesis (a `Prop`-valued definition passed as an argument, listed to the
+extractor with `assume=`) depends on it, and the register records `hyp:<Name>`. A hypothesis that occurs in an in-scope
+result is a node of kind `hypothesis` (asserted) with content `{name, label, text, source, cites, note}`:
+
+* `[hypothesis."<Name>"]`: `label` (the label in the paper of the lemma that states it informally; its text is taken
+  from the paper like a claim's statement), `paper`, `cites` (citation names), optional `note` or `text`.
+  Without an entry the hypothesis is still listed, with no label and no sources.
+* Its spec hash is `H("hyp-spec", {text, lean: spec(Lean definition), cites: [[c, full(c)]]})`.
+* An attestation with `hypothesis = "<Name>"` instead of `claim` is bound to it. A *current green* attestation says:
+  this hypothesis is a known theorem of the cited literature; the person found the source, compared its statement
+  with the formal definition and checked that the conditions match (checklist H1 to H3). It becomes stale when the
+  statement in the paper, the Lean definition or a cited source changes.
+* The register entry is **not** removed (the formalisation still assumes it, and `Reg` is unchanged). The status
+  table shows `given hyp. [known thm.]` when all hypotheses of a result are so attested, `[some known thm.]` when
+  some are, and a separate table lists every hypothesis with its attestation.
 
 ## 4. Register
 

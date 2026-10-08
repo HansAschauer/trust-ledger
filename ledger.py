@@ -17,7 +17,7 @@ from pathlib import Path
 
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 LEVELS = ("green", "yellow", "conjecture")
-ROOT_KINDS = ("claim", "attestation", "environment", "paper-source")
+ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 
@@ -93,7 +93,7 @@ def fingerprint(pub):
 
 def attestation_message(project, a):
     """The bytes that are signed: everything the attestation asserts, in canonical JSON."""
-    body = {k: a.get(k, "") for k in ("claim", "person", "date", "level", "reason", "bound")}
+    body = {k: a.get(k, "") for k in ("claim", "hypothesis", "person", "date", "level", "reason", "bound")}
     body |= {"checklist": list(a.get("checklist", [])), "project": project}
     return ("trust-ledger/0 attestation\n" + canon(body)).encode("utf-8")
 
@@ -186,6 +186,29 @@ def tex_sources(main, search, excluded):
     return files, sorted(set(unresolved))
 
 
+def flatten_tex(main, search):
+    """The text of `main` with every \\input/\\include replaced by the file's text, comments stripped:
+    labels then appear in the order of the compiled document."""
+    main = Path(main).resolve()
+
+    def resolve(name, exts=("", ".tex")):
+        for base in [main.parent, *search]:
+            for e in exts:
+                cand = base / (name if (e == "" or name.endswith(e)) else name + e)
+                if cand.is_file():
+                    return cand.resolve()
+        return None
+
+    def expand(path, stack):
+        text = strip_comments(path.read_text(errors="replace"))
+
+        def repl(m):
+            r = resolve(m.group(1).strip())
+            return expand(r, stack | {r}) if r and r not in stack else ""
+        return INPUT_RE.sub(repl, text)
+    return expand(main, {main})
+
+
 def find_environments(text):
     """Statement and display-math environments of `text`: (name, body_start, body_end)."""
     stack, envs = [], []
@@ -216,6 +239,33 @@ def result_labels(text, envs):
         if inner and inner[0].rstrip("*") in RESULT_ENVS:
             out.append(m.group(1))
     return out
+
+
+KIND_WORDS = {"theorem": "Theorem", "proposition": "Proposition", "lemma": "Lemma", "corollary": "Corollary",
+              "conjecture": "Conjecture", "claim": "Claim", "fact": "Fact", "observation": "Observation",
+              "assumption": "Assumption", "problem": "Problem", "definition": "Definition", "remark": "Remark",
+              "example": "Example"}
+
+
+def reference_tex(label, parsed):
+    """How a reader cites the labelled item: 'Lemma~\\ref{l}' or 'Equation~(\\ref{l})'. The type word comes from the
+    environment in the source, not from the counter (theorem-like environments often share one)."""
+    pat = re.compile(r"\\label\{" + re.escape(label) + r"\}")
+    for text, envs in parsed:
+        m = pat.search(text)
+        if not m:
+            continue
+        inner = None
+        for e in envs:
+            if e[1] <= m.start() < e[2] and (inner is None or e[1] > inner[1]):
+                inner = e
+        if inner is None:
+            break
+        base = inner[0].rstrip("*")
+        if base in MATH_ENVS:
+            return f"Equation~(\\ref{{{label}}})"
+        return f"{KIND_WORDS.get(base, base.capitalize())}~\\ref{{{label}}}"
+    return None
 
 
 def statement_of(label, parsed):
@@ -255,6 +305,7 @@ class Ledger:
 
     def load_human(self):
         self.claims, self.citations, self.assertions, self.attestations, self.keys = {}, {}, {}, [], {}
+        self.hypotheses = {}
         for f in sorted(self.dir.glob("*.toml")):
             if f.name == "ledger.toml":
                 continue
@@ -264,11 +315,14 @@ class Ledger:
             self.assertions.update(t.get("assertion", {}))
             self.attestations += t.get("attestation", [])
             self.keys.update(t.get("key", {}))
+            self.hypotheses.update(t.get("hypothesis", {}))
         for n, c in self.claims.items():
             if c.get("evidence", "E5") not in EVIDENCE:
                 self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
         self.apply_scope()
         for a in self.attestations:
+            if bool(a.get("claim")) == bool(a.get("hypothesis")):
+                self.errors.append(f"attestation by {a.get('person')}: needs exactly one of `claim` and `hypothesis`")
             if a.get("level") not in LEVELS:
                 self.errors.append(f"attestation on {a.get('claim')}: unknown level {a.get('level')!r}")
             elif a["level"] == "yellow" and not a.get("reason"):
@@ -297,14 +351,15 @@ class Ledger:
                 if u in self.claims and u not in keep:
                     keep.add(u); todo.append(u)
         self.claims = {n: c for n, c in self.claims.items() if n in keep}
-        self.attestations = [a for a in self.attestations if a.get("claim") in keep]
+        self.attestations = [a for a in self.attestations if a.get("claim") in keep or a.get("hypothesis")]
         self.assertions = {k: v for k, v in self.assertions.items() if v.get("claim") in keep}
         used = {x for c in self.claims.values() for x in c.get("cites", [])}
+        used |= {x for h in self.hypotheses.values() for x in h.get("cites", [])}
         self.citations = {k: v for k, v in self.citations.items() if k in used}
 
     def load_papers(self):
         """Paper-source nodes and the parsed statement environments of each paper."""
-        self.paper_nodes, self.parsed, self.unresolved = {}, {}, {}
+        self.paper_nodes, self.parsed, self.unresolved, self.flat = {}, {}, {}, {}
         papers = self.cfg.get("paper", {})
         excluded = [(self.root / d).resolve() for d in self.cfg.get("generated", {}).get("dirs", [])]
         for name, pc in papers.items():
@@ -320,26 +375,40 @@ class Ledger:
             rel = lambda f: str(f.relative_to(self.root)) if self.root in f.parents else str(f)
             self.paper_nodes[name] = dict(main=pc["main"], files={rel(f): sha_file(f) for f in files},
                                           unresolved=unresolved)
+            self.flat[name] = flatten_tex(main, search)
             self.parsed[name] = [(t, find_environments(t)) for t in
                                  (strip_comments(f.read_text(errors="replace")) for f in files if f.suffix == ".tex")]
 
     def uncovered(self):
         """Labelled theorem-like results of the selected paper(s) that no claim of the ledger covers."""
         claimed = {lab for c in self.claims.values() for lab in (c.get("labels") or ([c["label"]] if c.get("label") else []))}
+        claimed |= {h["label"] for h in self.hypotheses.values() if h.get("label")}
         out = []
         for name, parsed in self.parsed.items():
             if self.paper is None or name == self.paper:
                 out += [lab for text, envs in parsed for lab in result_labels(text, envs) if lab not in claimed]
         return sorted(set(out))
 
+    def hypothesis_statement(self, name, meta):
+        """(text, source) of a hypothesis: from the paper by its label if given, else the hand-written text."""
+        lab = meta.get("label")
+        sources = self.parsed.get(meta.get("paper")) if meta.get("paper") in self.parsed else \
+            [x for v in self.parsed.values() for x in v]
+        if lab and sources:
+            t, problem = statement_of(lab, sources)
+            if problem:
+                self.errors.append(f"hypothesis {name}: {problem}")
+                return "", "tex"
+            return f"[{lab}] {t}", "tex"
+        return meta.get("text", ""), "manual"
+
     def label_position(self, c):
         """(file index, offset) of the claim's first label in its paper, for ordering; None if absent."""
         labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
         for lab in labels:
-            for k, (text, _) in enumerate(self.parsed.get(c.get("paper"), [])):
-                m = re.search(r"\\label\{" + re.escape(lab) + r"\}", text)
-                if m:
-                    return (k, m.start())
+            m = re.search(r"\\label\{" + re.escape(lab) + r"\}", self.flat.get(c.get("paper"), ""))
+            if m:
+                return (0, m.start())
         return None
 
     def attestation_summary(self, n):
@@ -461,6 +530,21 @@ class Ledger:
         for n, c in self.claims.items():
             c["lean"] = self.expand_lean(c.get("lean", []))
             self.stmt[n] = self.statement(n, c)
+        # hypotheses the in-scope results are proved given (assumption constants found in their statements)
+        self.scope_hyps = sorted({a for c in self.claims.values() for x in c["lean"] if x in self.decls
+                                  for a in self.decls[x].get("assumptions", [])})
+        self.hstmt = {}
+        for h in self.scope_hyps:
+            meta = self.hypotheses.get(h, {})
+            self.hstmt[h] = self.hypothesis_statement(h, meta)
+            payload["hyp:" + h] = dict(kind="hypothesis", provenance="asserted", content=dict(
+                name=h, label=meta.get("label", ""), text=self.hstmt[h][0], source=self.hstmt[h][1],
+                cites=sorted(meta.get("cites", [])), note=meta.get("note", "")))
+            deps["hyp:" + h] = sorted(["cite:" + x for x in meta.get("cites", []) if x in self.citations]
+                                      + (["lean:" + h] if h in self.decls else []))
+            for x in meta.get("cites", []):
+                if x not in self.citations:
+                    self.errors.append(f"hypothesis {h}: unknown citation {x}")
         for n, c in self.claims.items():
             i = "claim:" + n
             d = []
@@ -487,14 +571,20 @@ class Ledger:
         self.attest_ids = []
         for k, a in enumerate(self.attestations):
             i = f"attest:{k}"
-            if "claim:" + a.get("claim", "") not in payload:
-                self.errors.append(f"attestation {k}: unknown claim {a.get('claim')}")
-                continue
+            if a.get("hypothesis"):
+                if a["hypothesis"] not in self.scope_hyps:
+                    continue  # a hypothesis no result of this scope depends on
+                target = "hyp:" + a["hypothesis"]
+            else:
+                target = "claim:" + a.get("claim", "")
+                if target not in payload:
+                    self.errors.append(f"attestation {k}: unknown claim {a.get('claim')}")
+                    continue
             a["_sig"] = self.check_signature(k, a)
             payload[i] = dict(kind="attestation", provenance="asserted", content={
-                x: a.get(x, "") for x in ("claim", "person", "date", "level", "reason", "bound", "key", "sig")}
+                x: a.get(x, "") for x in ("claim", "hypothesis", "person", "date", "level", "reason", "bound", "key", "sig")}
                 | dict(checklist=a.get("checklist", [])))
-            deps[i] = ["claim:" + a["claim"]] + (["key:" + a["key"]] if a.get("key") in self.keys else [])
+            deps[i] = [target] + (["key:" + a["key"]] if a.get("key") in self.keys else [])
             self.attest_ids.append(i)
         self.full = merkle(payload, deps, "node")
         seen, todo = set(), [i for i, q in payload.items() if q["kind"] in ROOT_KINDS]
@@ -514,6 +604,10 @@ class Ledger:
                          others=[[i, self.full[i]] for i in sorted(deps["claim:" + n]) if not i.startswith(("lean:", "claim:"))])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
+        self.hspec = {h: H("hyp-spec", dict(text=self.hstmt[h][0], lean=self.spec.get("lean:" + h, ""),
+                                           cites=[[x, self.full["cite:" + x]] for x in sorted(self.hypotheses.get(h, {}).get("cites", []))
+                                                  if "cite:" + x in self.full]))
+                      for h in self.scope_hyps}
         self.root_hash = H("root", [[i, self.full[i]] for i in sorted(payload)
                                     if payload[i]["kind"] in ROOT_KINDS])
         self.register = self.compute_register()
@@ -576,6 +670,22 @@ class Ledger:
             return "assumes"
         return "ok"
 
+    def hypothesis_state(self, h):
+        """Latest attestation per person on hypothesis h -> [(person, level, date, current?)]."""
+        latest = {}
+        for a in self.attestations:
+            if a.get("hypothesis") == h and a.get("_sig") not in ("invalid", "revoked"):
+                latest[a.get("person", "?")] = a
+        cur = self.hspec.get(h)
+        return [(p, a.get("level"), a.get("date", ""), a.get("bound") == cur) for p, a in sorted(latest.items())]
+
+    def known_theorem(self, h):
+        """True if someone has a current green attestation that hypothesis h is a known theorem."""
+        return any(lvl == "green" and cur for _, lvl, _, cur in self.hypothesis_state(h))
+
+    def claim_hypotheses(self, n):
+        return sorted({e[4:] for e in self.register.get(n, []) if e.startswith("hyp:") and not e.startswith("hyp:cited:")})
+
     def attestation_state(self, n):
         """Latest attestation per person on claim n -> list of (person, level, date, current?)."""
         latest = {}
@@ -596,7 +706,8 @@ class Ledger:
     def lock(self):
         return dict(format=0, root=self.root_hash, toolchain=self.toolchain,
                     nodes={i: dict(kind=p["kind"], full=self.full[i]) for i, p in sorted(self.payload.items())},
-                    claims={n: dict(spec=self.cspec[n], register=self.register[n]) for n in sorted(self.claims)})
+                    claims={n: dict(spec=self.cspec[n], register=self.register[n]) for n in sorted(self.claims)},
+                    hypotheses={h: dict(spec=self.hspec[h]) for h in self.scope_hyps})
 
 
 # ---------------------------------------------------------------- commands
@@ -609,11 +720,24 @@ def cmd_status(L, args):
         for p, lvl, date, cur in L.attestation_state(n):
             att.append(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}")
             stale += not cur
-        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], L.lean_status(n), "; ".join(att) or "none",
+        ls = L.lean_status(n)
+        hs = L.claim_hypotheses(n)
+        if ls == "assumes" and hs:
+            k = sum(L.known_theorem(h) for h in hs)
+            ls += f" ({k}/{len(hs)} known thm.)" if k else ""
+        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], ls, "; ".join(att) or "none",
                      str(len(L.register[n]))))
     w = [max(len(r[i]) for r in rows) for i in range(6)]
     for r in rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
+    if L.scope_hyps:
+        print("\nhypotheses (results are proved given these):")
+        for h in L.scope_hyps:
+            st = L.hypothesis_state(h)
+            att = "; ".join(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}" for p, lvl, _, cur in st) or "not attested"
+            meta = L.hypotheses.get(h, {})
+            print(f"  {h}  [{meta.get('label') or 'no label'}; cites {', '.join(meta.get('cites', [])) or 'nothing'}]  {att}")
+            stale += any(not cur for *_, cur in st)
     print(f"\nroot {L.root_hash}" + (f"  (paper {L.paper})" if L.paper else ""))
     if L.paper and L.cfg.get("generated", {}).get("dirs"):
         rf = L.root / L.cfg["generated"]["dirs"][0] / f"ledger-{L.paper}-root.tex"
@@ -694,11 +818,8 @@ def cmd_tex(L, args):
 
     # one row per label (readers look up "Theorem X"); a claim without labels gets one row under its name
     def label_pos(c, lab):
-        for k, (text, _) in enumerate(L.parsed.get(c.get("paper"), [])):
-            m = re.search(r"\\label\{" + re.escape(lab) + r"\}", text)
-            if m:
-                return (0, k, m.start())
-        return (1, 0, 0)
+        m = re.search(r"\\label\{" + re.escape(lab) + r"\}", L.flat.get(c.get("paper"), ""))
+        return (0, m.start(), 0) if m else (1, 0, 0)
     entries = []
     for n, c in L.claims.items():
         labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
@@ -711,6 +832,9 @@ def cmd_tex(L, args):
         cnt[L.attestation_summary(n)] += 1
         ls = L.lean_status(n)
         assumes += ls == "assumes"; sorry += ls == "sorry"
+    def reference(c, lab):
+        parsed = L.parsed.get(c.get("paper")) or [x for v in L.parsed.values() for x in v]
+        return reference_tex(lab, parsed)
     rows = []
     seen = {}
     for _, lab, n in entries:
@@ -719,11 +843,17 @@ def cmd_tex(L, args):
         c = L.claims[n]
         ls = L.lean_status(n)
         st = L.attestation_state(n)
+        if ls == "assumes":
+            hs = L.claim_hypotheses(n)
+            k = sum(L.known_theorem(h) for h in hs)
+            ls = "assumes-known" if hs and k == len(hs) else "assumes-some" if k else "assumes"
         att = "; ".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{{L.signature_of(n, p)}}}"
             for p, lvl, date, cur in st
         ) or "\\LedgerNoAtt"
-        res = f"\\texttt{{{tex_esc(lab)}}}" + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
+        ref = reference(c, lab)
+        res = (f"{ref} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}" if ref else f"\\texttt{{{tex_esc(lab)}}}") \
+            + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
         rows.append(f"\\LedgerRow{{{res}}}{{{c.get('evidence', 'E5')}}}{{{L.stmt[n][1]}}}"
                     f"{{\\LedgerLeanCell{{{ls if ls != '-' else 'none'}}}}}{{{len(L.register[n])}}}{{{att}}}")
     counted = [(n, p) for n in names for p, *_ in L.attestation_state(n)]
@@ -734,8 +864,20 @@ def cmd_tex(L, args):
             kc = q["content"]
             keyrows.append(f"\\LedgerKeyRow{{{tex_esc(kc['person'])}}}{{{tex_esc(fingerprint(kc['public']))}}}"
                            f"{{{tex_esc(kc.get('source') or 'paper')}}}{{{'revoked ' + tex_esc(kc['revoked']) if kc.get('revoked') else ''}}}%")
+    hrows = []
+    for h in L.scope_hyps:
+        meta = L.hypotheses.get(h, {})
+        lab = meta.get("label")
+        ref = (reference_tex(lab, [x for v in L.parsed.values() for x in v]) if lab else None) or "---"
+        att = "; ".join(
+            f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{unsigned}}"
+            for p, lvl, date, cur in L.hypothesis_state(h)) or "\\LedgerNoAtt"
+        hrows.append(f"\\LedgerHypRow{{{ref}}}{{\\texttt{{{tex_esc(h)}}}}}{{{tex_esc(', '.join(meta.get('cites', [])) or '---')}}}{{{att}}}%")
+    nknown = sum(L.known_theorem(h) for h in L.scope_hyps)
     cl = [f"% generated by ledger.py -P {L.paper} tex; do not edit. Excluded from the hashed source.",
           f"\\def\\LedgerNClaims{{{len(names)}}}", f"\\def\\LedgerNAtt{{{len(counted)}}}",
+          f"\\def\\LedgerNHyp{{{len(L.scope_hyps)}}}", f"\\def\\LedgerNHypKnown{{{nknown}}}",
+          "\\def\\LedgerHyps{%"] + hrows + ["}",
           f"\\def\\LedgerNSignedAtt{{{nsigned}}}", f"\\def\\LedgerNKeys{{{len(keyrows)}}}",
           f"\\def\\LedgerNUncovered{{{len(L.uncovered())}}}",
           "\\def\\LedgerUncovered{%s}" % ", ".join(f"\\texttt{{{tex_esc(x)}}}" for x in L.uncovered()),
@@ -794,13 +936,21 @@ def toml_record(table, rec):
 
 
 def cmd_attest(L, args):
-    if args.claim not in L.claims:
-        sys.exit(f"unknown claim {args.claim}")
+    if bool(args.claim) == bool(args.hypothesis):
+        sys.exit("give exactly one of CLAIM and --hypothesis NAME")
+    if args.hypothesis:
+        if args.hypothesis not in L.scope_hyps:
+            sys.exit(f"{args.hypothesis} is not a hypothesis of any result in this scope; known: {', '.join(L.scope_hyps) or 'none'}")
+        target, bound = dict(hypothesis=args.hypothesis), L.hspec[args.hypothesis]
+    else:
+        if args.claim not in L.claims:
+            sys.exit(f"unknown claim {args.claim}")
+        target, bound = dict(claim=args.claim), L.cspec[args.claim]
     if args.level == "yellow" and not args.reason:
         sys.exit("yellow needs --reason")
-    rec = dict(claim=args.claim, person=args.person, date=datetime.date.today().isoformat(), level=args.level,
+    rec = dict(**target, person=args.person, date=datetime.date.today().isoformat(), level=args.level,
                reason=args.reason or "", checklist=[x for x in (args.checklist or "").split(",") if x],
-               bound=L.cspec[args.claim])
+               bound=bound)
     extra = ""
     if args.sign:
         if not args.key:
@@ -818,7 +968,7 @@ def cmd_attest(L, args):
     out = Path(args.out) if args.out else L.dir / "attestations.toml"
     with open(out, "a") as f:
         f.write(extra + toml_record("[[attestation]]", rec))
-    print(f"recorded {args.level} by {args.person} on {args.claim}, bound to {rec['bound'][:12]}"
+    print(f"recorded {args.level} by {args.person} on {args.claim or 'hypothesis ' + args.hypothesis}, bound to {rec['bound'][:12]}"
           + (", signed" if "sig" in rec else "") + (f" -> {out}" if args.out else ""))
     return 0
 
@@ -842,7 +992,7 @@ def cmd_verify_attestation(L, args):
     project = L.cfg.get("project", {}).get("name", "project")
     bad = 0
     for a in t.get("attestation", []):
-        claim = lock["claims"].get(a.get("claim"))
+        claim = lock["hypotheses"].get(a.get("hypothesis")) if a.get("hypothesis") else lock["claims"].get(a.get("claim"))
         key = (t.get("key", {}) or {}).get(a.get("key", ""), None) or L.keys.get(a.get("key", ""))
         state = []
         state.append("statement matches the lock" if claim and claim["spec"] == a.get("bound")
@@ -857,7 +1007,7 @@ def cmd_verify_attestation(L, args):
             state.append(f"signature {'VALID' if ok else 'INVALID' if ok is False else 'unchecked (no ssh-keygen)'}"
                          f" for key {fingerprint(key['public'])} (introduced by this file: check it came from {a.get('person')})")
             bad += ok is False
-        print(f"{a.get('level', '?').upper()} by {a.get('person')} on {a.get('claim')} ({a.get('date')}): " + "; ".join(state))
+        print(f"{a.get('level', '?').upper()} by {a.get('person')} on {a.get('claim') or 'hypothesis ' + a.get('hypothesis', '?')} ({a.get('date')}): " + "; ".join(state))
     return 1 if bad else 0
 
 
@@ -885,7 +1035,8 @@ def main(argv=None):
     p = sub.add_parser("status"); p.add_argument("--strict", action="store_true")
     sub.add_parser("lock"); sub.add_parser("verify"); sub.add_parser("extract"); sub.add_parser("tex")
     p = sub.add_parser("why"); p.add_argument("claim")
-    p = sub.add_parser("attest"); p.add_argument("claim"); p.add_argument("--person", required=True)
+    p = sub.add_parser("attest"); p.add_argument("claim", nargs="?"); p.add_argument("--person", required=True)
+    p.add_argument("--hypothesis", help="attest a hypothesis (e.g. that it is a known theorem) instead of a claim")
     p.add_argument("--level", required=True, choices=LEVELS); p.add_argument("--reason"); p.add_argument("--checklist")
     p.add_argument("--sign", metavar="PRIVATE_KEY", help="sign with this ssh key file (ssh-keygen -Y sign)")
     p.add_argument("--key", help="id of the signing key in ledger/keys.toml")

@@ -80,6 +80,9 @@
 \newcommand{\LedgerLeanCell}[1]{\csname ledgercheck@lean@#1\endcsname}
 \newcommand{\ledgercheck@lean@ok}{checked}
 \newcommand{\ledgercheck@lean@assumes}{checked, given hyp.}
+\expandafter\newcommand\csname ledgercheck@lean@assumes-known\endcsname{checked, given hyp.\ {\scriptsize[known thm.]}}
+\expandafter\newcommand\csname ledgercheck@lean@assumes-some\endcsname{checked, given hyp.\ {\scriptsize[some known thm.]}}
+\newcommand{\LedgerHypRow}[4]{\ledgercheck@mb{2.2cm}{#1} & \ledgercheck@mb{3.7cm}{#2} & \ledgercheck@mb{5.2cm}{#3} & #4 \\}
 \newcommand{\ledgercheck@lean@axioms}{extra axioms}
 \newcommand{\ledgercheck@lean@sorry}{\textbf{contains sorry}}
 \newcommand{\ledgercheck@lean@missing}{\textbf{declaration missing}}
@@ -88,16 +91,16 @@
 % a long entry runs into the margin instead of into another column
 \newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
 \newcommand{\LedgerRow}[6]{%
-  \ledgercheck@mb{4.7cm}{#1} & \ledgercheck@mb{0.7cm}{#2} & \ledgercheck@mb{1.0cm}{#3} &
-  \ledgercheck@mb{3.0cm}{#4} & \ledgercheck@mb{0.7cm}{#5} & #6 \\}
+  \ledgercheck@mb{5.5cm}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} &
+  \ledgercheck@mb{4.25cm}{#4} & \ledgercheck@mb{0.5cm}{#5} & #6 \\}
 % the status table comes in chunks, each a plain tabular with its own header (neither longtable nor
 % supertabular nor p-columns work in the two-column quantumarticle class); pages break between chunks
-\newcommand{\LedgerTable}[1]{\par\noindent
-  \begin{tabular}{@{}llllll@{}}
-    \toprule Result & Evid. & Stmt. & Lean & Reg. & Attestation\\ \midrule
+\newcommand{\LedgerTable}[1]{\par\noindent{\setlength{\tabcolsep}{3pt}%
+  \begin{tabular}{@{}lllll@{}}
+    \toprule Result & Ev. Stmt. & Lean & Reg. & Attestation\\ \midrule
     #1
     \bottomrule
-  \end{tabular}\par\vskip 4pt plus 6pt}
+  \end{tabular}}\par\vskip 4pt plus 6pt}
 
 % ---- marker ---------------------------------------------------------------
 \newcommand{\ledgerrootshort}{%
@@ -150,7 +153,20 @@
     sources in the supplement (see its README), then run the same command.
 
     \par\medskip
-    {\footnotesize\LedgerChunks}
+    {\scriptsize\LedgerChunks}
+    \ifdefined\LedgerNHyp\ifnum\LedgerNHyp>0
+      \par\medskip\noindent\textbf{Hypotheses.} Results marked \emph{given hyp.} are proved in Lean given a
+      hypothesis, a statement that is assumed there, not proved. If it is a known theorem of the literature, a named
+      person can attest that: they found the cited statement, compared it with the formal definition and
+      checked that the conditions match. The attestation is bound to the hash of the statement in this paper, the
+      formal definition and the cited sources, so it becomes \ledgercheck@st@stale{} when any of them changes. It does not
+      make the hypothesis a proof in Lean; it says who vouches that the assumption is a theorem.
+      Currently \LedgerNHypKnown{} of \LedgerNHyp{} hypotheses are attested as known theorems.\par\smallskip
+      {\footnotesize\noindent\begin{tabular}{@{}llll@{}}
+        \toprule In this paper & Formal hypothesis & Cited & Attested as known theorem\\ \midrule
+        \LedgerHyps
+        \bottomrule\end{tabular}}\par\medskip
+    \fi\fi
     \ifnum\LedgerNUncovered>0
       \par\medskip\noindent\textbf{Not in the ledger.} \LedgerNUncovered{} labelled theorem-like results of this
       paper have no entry in the ledger, so nothing is claimed about them here: \LedgerUncovered.
@@ -163,10 +179,11 @@
       {\footnotesize\noindent\begin{tabular}{@{}lll@{}} Person & Fingerprint & Introduced by\\\midrule
         \LedgerKeys\end{tabular}}\par\medskip
     \fi
-    \noindent Evid.: E1 checked proof, E2 checked certificate, E3 exact computation, E4 numerical
+    \noindent Ev.: evidence type, E1 checked proof, E2 checked certificate, E3 exact computation, E4 numerical
     evidence, E5 assertion. Stmt.: \texttt{tex} = taken from this paper's source by its label,
     \texttt{manual} = written in the ledger. Lean: \emph{checked} = accepted by the Lean kernel with the
-    standard axioms only; \emph{given hyp.} = in addition a hypothesis is assumed, not proved;
+    standard axioms only; \emph{given hyp.} = in addition a hypothesis is assumed, not proved
+    (\emph{known thm.}: attested to be a theorem of the literature, see Hypotheses);
     --- = no Lean declaration. Reg.: number of open assumptions on which the result rests.
     A result covering several labels appears once per label.
   \else
