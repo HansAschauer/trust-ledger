@@ -5,6 +5,10 @@ name = "toy"
 dump = "lean.json"          # produced by the Lean extractor; hand-made here
 # extract = "./run.sh dump"  # reads declaration names on stdin, prints the JSON dump
 
+[proverif]
+dump = "proverif.json"       # produced by ledger/proverif-dump.sh; hand-made here
+# extract = "../../../ledger/proverif-dump.sh"  # reads .pv paths on stdin, prints the JSON dump
+
 [paper.toy]
 main = "paper/main.tex"
 

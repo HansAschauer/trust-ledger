@@ -10,7 +10,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `environment` |
+| `kind`       | `lean-decl`, `proverif-query`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `environment` |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -65,6 +65,16 @@ every claim that `uses` it.
 `value_term`, `proof_term`, axioms, sorry, assumptions. A theorem without a proof term is an
 error, not an empty proof.
 
+### 2.3b ProVerif content
+
+A `proverif-query` node (`computed`, no `deps`) covers one named `query` of one `.pv` file: content
+`{file, sha256, query, result}`, where `query` is the literal query text as written in the source
+(e.g. `attacker(secret)`) and `result` is `true`, `false` or `cannot be proved`, as extracted by
+`ledger/proverif-dump.sh`. The file's hash already covers the whole model (channels, processes,
+equational theory), so there is no separate dependency graph as for Lean declarations: per §4 of
+the paper, a ProVerif result is evidence type E1 *relative to the model*, and the model itself is
+what a reader must judge faithful to the protocol it claims to describe.
+
 ### 2.4 Paper source and statements
 
 A `paper-source` node (`computed`) has content `{main, files: {path: sha256}, unresolved: [...]}`.
@@ -96,8 +106,8 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 `examples/toy/ledger/`). Computed nodes are never written by hand; they are recomputed.
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
-  (declared type E1..E5), `lean` (declaration names), `files` (paths), `uses` (other claims),
-  `cites` (citation names).
+  (declared type E1..E5), `lean` (declaration names), `proverif` (`"path/to/file.pv#query text"`
+  references into the ProVerif dump), `files` (paths), `uses` (other claims), `cites` (citation names).
 * `[citation.<name>]`: `key`, `statement` (as used here), `source` (theorem number / page).
 * `[assertion.<name>]`: `claim`, `text`; evidence type E5 by definition.
 * `[[attestation]]`: `claim`, `person`, `date`, `level` (`green`, `yellow`, `conjecture`), `reason`
@@ -152,8 +162,9 @@ result is a node of kind `hypothesis` (asserted) with content `{name, label, tex
   `Quot.sound` are standard), `sorry` if `sorryAx` occurs;
 * `hyp:<name>` for each declared assumption constant occurring as a hypothesis of a statement;
 * `hyp:cited:<citation>` for each citation;
+* `model:<file>` for each distinct `.pv` file a claim's `proverif` references rest on;
 * `assertion:<name>` for each assertion on the claim;
-* `evidence:none` if the claim has neither Lean declarations nor files.
+* `evidence:none` if the claim has neither Lean declarations, ProVerif queries nor files.
 
 `Reg(c) = own(c) ∪ ⋃ Reg(u)` over `uses`, as a least fixed point (well defined on cycles).
 

@@ -3,12 +3,12 @@
 
 Single file, Python >= 3.11, standard library only. Normative format: docs/FORMAT.md.
 
-  ledger.py [-C DIR] status [--strict]   table of claims: Lean status, attestation, register size
+  ledger.py [-C DIR] status [--strict]   table of claims: Lean/ProVerif status, attestation, register size
   ledger.py [-C DIR] why CLAIM           everything CLAIM rests on, and who attested what
   ledger.py [-C DIR] lock                recompute and write ledger/lock.json (prints the root)
   ledger.py [-C DIR] verify              recompute and compare with lock.json; exit 1 on any difference
   ledger.py [-C DIR] attest CLAIM --person P --level green|yellow|conjecture [--reason R] [--checklist A1,A2]
-  ledger.py [-C DIR] extract             run the configured extractor (writes the Lean dump)
+  ledger.py [-C DIR] extract             run the configured extractor(s) (writes the Lean/ProVerif dumps)
 
 DIR is the project root; it must contain ledger/ledger.toml.
 """
@@ -339,6 +339,7 @@ class Ledger:
         self.errors, self.warnings = [], []
         self.load_human()
         self.load_lean()
+        self.load_proverif()
         self.load_papers()
         self.build()
 
@@ -399,8 +400,8 @@ class Ledger:
     def load_papers(self):
         """Paper-source nodes and the parsed statement environments of each paper."""
         self.paper_nodes, self.parsed, self.unresolved, self.flat = {}, {}, {}, {}
-        papers = self.cfg.get("paper", {})
         self.extra_result, self.kind_words = {}, {}
+        papers = self.cfg.get("paper", {})
         excluded = [(self.root / d).resolve() for d in self.cfg.get("generated", {}).get("dirs", [])]
         for name, pc in papers.items():
             if self.paper is not None and name != self.paper:
@@ -509,6 +510,18 @@ class Ledger:
         elif any(c.get("lean") for c in self.claims.values()):
             self.errors.append(f"{p} missing: run `ledger.py extract`")
 
+    def load_proverif(self):
+        """ProVerif dump: {"files": {path: {sha256, queries: {query text: result}}}}."""
+        self.pv_files = {}
+        pc = self.cfg.get("proverif")
+        if not pc:
+            return
+        p = self.dir / pc.get("dump", "proverif.json")
+        if p.exists():
+            self.pv_files = json.loads(p.read_text()).get("files", {})
+        elif any(c.get("proverif") for c in self.claims.values()):
+            self.errors.append(f"{p} missing: run `ledger.py extract`")
+
     def expand_lean(self, names):
         out = []
         for x in names:
@@ -558,6 +571,25 @@ class Ledger:
                     continue
                 payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
                 deps[i] = []
+        for n, c in self.claims.items():
+            for ref in c.get("proverif", []):
+                if "#" not in ref:
+                    self.errors.append(f"claim {n}: proverif reference {ref!r} must be 'file#query'")
+                    continue
+                i = "pv:" + ref
+                if i in payload:
+                    continue
+                f, q = ref.split("#", 1)
+                fd = self.pv_files.get(f)
+                if fd is None:
+                    self.errors.append(f"claim {n}: proverif file {f} not in dump")
+                    continue
+                if q not in fd.get("queries", {}):
+                    self.errors.append(f"claim {n}: proverif query {q!r} not in dump for {f}")
+                    continue
+                payload[i] = dict(kind="proverif-query", provenance="computed",
+                                  content=dict(file=f, sha256=fd["sha256"], query=q, result=fd["queries"][q]))
+                deps[i] = []
         for k, key in self.keys.items():
             payload["key:" + k] = dict(kind="key", provenance="asserted", content={
                 x: key.get(x, "") for x in ("person", "public", "source", "url", "fetched", "revoked")}
@@ -598,6 +630,7 @@ class Ledger:
                 else:
                     self.errors.append(f"claim {n}: Lean declaration {x} not in dump")
             d += ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
+            d += ["pv:" + r for r in c.get("proverif", []) if "pv:" + r in payload]
             for x in c.get("cites", []):
                 if x in self.citations:
                     d.append("cite:" + x)
@@ -684,8 +717,9 @@ class Ledger:
                     r.add("sorry:" + x)
                 r |= {"hyp:" + a for a in d.get("assumptions", [])}
             r |= {"hyp:cited:" + x for x in c.get("cites", [])}
+            r |= {"model:" + ref.split("#", 1)[0] for ref in c.get("proverif", [])}
             r |= {"assertion:" + a for a, v in self.assertions.items() if v["claim"] == n}
-            if not c.get("lean") and not c.get("files"):
+            if not c.get("lean") and not c.get("files") and not c.get("proverif"):
                 r.add("evidence:none")
             own[n] = r
         reg = {n: set(r) for n, r in own.items()}
@@ -712,6 +746,25 @@ class Ledger:
             return "axioms"
         if any(d.get("assumptions") for d in ds):
             return "assumes"
+        return "ok"
+
+    def proverif_status(self, n):
+        """'ok' (every query true), 'false' (an attack was found), 'unproved' ('cannot be proved'),
+        'missing' (dump does not cover a referenced query) or '-' (no proverif evidence)."""
+        refs = self.claims[n].get("proverif", [])
+        if not refs:
+            return "-"
+        results = []
+        for ref in refs:
+            f, _, q = ref.partition("#")
+            fd = self.pv_files.get(f)
+            results.append(fd["queries"][q] if fd and q in fd.get("queries", {}) else None)
+        if any(r is None for r in results):
+            return "missing"
+        if any(r == "false" for r in results):
+            return "false"
+        if any(r != "true" for r in results):
+            return "unproved"
         return "ok"
 
     def hypothesis_state(self, h):
@@ -757,7 +810,7 @@ class Ledger:
 # ---------------------------------------------------------------- commands
 def cmd_status(L, args):
     word = {"green": "GREEN", "yellow": "YELLOW", "conjecture": "CONJECTURE"}
-    rows = [("claim", "evid", "stmt", "lean", "attestation", "register")]
+    rows = [("claim", "evid", "stmt", "lean", "proverif", "attestation", "register")]
     stale = 0
     for n in sorted(L.claims):
         att = []
@@ -769,9 +822,9 @@ def cmd_status(L, args):
         if ls == "assumes" and hs:
             k = sum(L.known_theorem(h) for h in hs)
             ls += f" ({k}/{len(hs)} known thm.)" if k else ""
-        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], ls, "; ".join(att) or "none",
-                     str(len(L.register[n]))))
-    w = [max(len(r[i]) for r in rows) for i in range(6)]
+        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], ls, L.proverif_status(n),
+                     "; ".join(att) or "none", str(len(L.register[n]))))
+    w = [max(len(r[i]) for r in rows) for i in range(7)]
     for r in rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
     if L.scope_hyps:
@@ -809,7 +862,8 @@ def cmd_why(L, args):
     if n not in L.claims:
         sys.exit(f"unknown claim {n}")
     c = L.claims[n]
-    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}, lean {L.lean_status(n)}, spec {L.cspec[n][:12]}")
+    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}, lean {L.lean_status(n)}, "
+         f"proverif {L.proverif_status(n)}, spec {L.cspec[n][:12]}")
     print("  rests on:")
     seen, todo = set(), list(L.deps["claim:" + n])
     while todo:
@@ -1068,18 +1122,27 @@ def cmd_verify_attestation(L, args):
 
 
 def cmd_extract(L, args):
-    cmd = L.cfg.get("lean", {}).get("extract")
-    if not cmd:
+    lc, pc = L.cfg.get("lean", {}), L.cfg.get("proverif", {})
+    if lc.get("extract"):
+        names = sorted({x for c in L.claims.values() for x in c.get("lean", [])})
+        out = subprocess.run(lc["extract"], shell=True, cwd=L.root, input="\n".join(names), text=True, capture_output=True)
+        sys.stderr.write(out.stderr[-3000:])
+        if out.returncode:
+            return out.returncode
+        dump = json.loads(out.stdout)  # must be valid JSON
+        L.root = Path(args.dir).resolve()
+        dump["env_hash"] = L.env_hash()  # lets later runs notice that the sources moved on
+        (L.dir / lc.get("dump", "lean.json")).write_text(json.dumps(dump, separators=(",", ":")))
+    elif not pc.get("extract"):
         sys.exit("no [lean] extract command configured")
-    names = sorted({x for c in L.claims.values() for x in c.get("lean", [])})
-    out = subprocess.run(cmd, shell=True, cwd=L.root, input="\n".join(names), text=True, capture_output=True)
-    sys.stderr.write(out.stderr[-3000:])
-    if out.returncode:
-        return out.returncode
-    dump = json.loads(out.stdout)  # must be valid JSON
-    L.root = Path(args.dir).resolve()
-    dump["env_hash"] = L.env_hash()  # lets later runs notice that the sources moved on
-    (L.dir / L.cfg["lean"].get("dump", "lean.json")).write_text(json.dumps(dump, separators=(",", ":")))
+    if pc.get("extract"):
+        files = sorted({r.split("#", 1)[0] for c in L.claims.values() for r in c.get("proverif", [])})
+        out = subprocess.run(pc["extract"], shell=True, cwd=L.root, input="\n".join(files), text=True, capture_output=True)
+        sys.stderr.write(out.stderr[-3000:])
+        if out.returncode:
+            return out.returncode
+        (L.dir / pc.get("dump", "proverif.json")).write_text(
+            json.dumps({"files": json.loads(out.stdout)}, separators=(",", ":")))
     return 0
 
 

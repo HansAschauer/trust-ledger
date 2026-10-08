@@ -35,6 +35,12 @@ label = "eq:f"
 paper = "toy"
 evidence = "E5"
 
+[claim.pv-secrecy]
+text = "The encrypted value stays secret from the attacker; the plaintext one does not."
+paper = "toy"
+evidence = "E1"
+proverif = ["proverif/example.pv#attacker(s_enc)"]
+
 [claim.other-paper]
 text = "Belongs to another paper."
 paper = "other"

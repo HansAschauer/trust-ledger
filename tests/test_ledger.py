@@ -151,7 +151,7 @@ class Latex(Toy):
         lg.main(["-C", str(self.p), "-P", "toy", "tex"])
         st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
         self.assertIn("\\def\\LedgerNStale{2}", st)
-        self.assertIn("\\def\\LedgerNNone{2}", st)
+        self.assertIn("\\def\\LedgerNNone{3}", st)
         self.assertIn("stale}", st)
         self.assertEqual(lg.tex_esc("a_b & 50% #1"), "a\\_b \\& 50\\% \\#1")
 
@@ -175,6 +175,28 @@ class Latex(Toy):
         self.assertEqual(self.L().errors, [])
         self.tex("chapters/results.tex", lambda t: t + "% changed\n")
         self.assertTrue(any("older than the sources" in e for e in self.L().errors))
+
+    def test_proverif_evidence(self):
+        L = self.L()
+        self.assertEqual(L.proverif_status("pv-secrecy"), "ok")
+        self.assertIn("model:proverif/example.pv", L.register["pv-secrecy"])
+        self.assertEqual(L.root_hash, self.L().root_hash)            # deterministic
+        node = L.payload["pv:proverif/example.pv#attacker(s_enc)"]
+        self.assertEqual(node["content"]["result"], "true")
+
+    def test_proverif_query_result_false_is_reported(self):
+        f = self.p / "ledger" / "claims.toml"
+        f.write_text(f.read_text().replace("attacker(s_enc)", "attacker(s_plain)"))
+        self.assertEqual(self.L().proverif_status("pv-secrecy"), "false")
+
+    def test_proverif_unknown_query_is_an_error(self):
+        f = self.p / "ledger" / "claims.toml"
+        f.write_text(f.read_text().replace("attacker(s_enc)", "attacker(nonexistent)"))
+        self.assertTrue(any("not in dump" in e for e in self.L().errors))
+
+    def test_proverif_dump_missing_is_an_error(self):
+        (self.p / "ledger" / "proverif.json").unlink()
+        self.assertTrue(any("missing: run" in e for e in self.L().errors))
 
     def test_uncovered_results_are_reported(self):
         self.tex("chapters/results.tex", lambda t: t + "\\begin{lemma}\\label{lem:forgotten} Not in the ledger.\\end{lemma}\n"

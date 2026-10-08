@@ -1,0 +1,14 @@
+(* Toy protocol for the trust-ledger ProVerif adapter: a value is sent either in
+   the clear or encrypted with a shared key; secrecy holds only for the encrypted one. *)
+free c: channel.
+free s_plain: bitstring [private].
+free s_enc: bitstring [private].
+free k: bitstring [private].
+fun enc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, key: bitstring; dec(enc(m, key), key) = m.
+
+query attacker(s_plain).
+query attacker(s_enc).
+
+process
+    out(c, s_plain) | out(c, enc(s_enc, k))
