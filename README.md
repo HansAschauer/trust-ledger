@@ -1,17 +1,33 @@
 # trust-ledger
 
-A Merkle ledger of the evidence behind the claims of a paper: Lean declarations, scripts,
-citations, human assertions and named attestations, hashed together along their dependencies.
-Change any leaf and every hash above it changes; change a *statement* and the human attestations
-bound to it are reported stale. Publish the root (e.g. in the arXiv comment field) and anyone can
-recompute it.
+When a paper's results are checked by machines (proofs verified by a proof assistant such as
+[Lean](https://lean-lang.org), numerical scripts, formal models), a reader still has to ask: *which exact
+statements were checked, by what, and who vouches that they say what the paper says?* trust-ledger keeps a
+ledger that answers this. It lists every result of the paper and, for each, what it rests on: the
+machine-checked proofs, the scripts and their outputs, results cited from other papers, assumptions that were
+made but not proved, and the confirmations of named people who have personally checked that the formal
+statement matches the text. Every item gets a *hash*, a short fingerprint computed from its exact content,
+which changes if even one character of the content changes. The fingerprint of a result is computed together
+with the fingerprints of everything it depends on, and so on up to a single *root* fingerprint for the whole
+paper (this nested construction is called a Merkle tree, after its inventor). Change anything anywhere, and
+the fingerprints of everything built on it, including the root, change too.
+
+The root is printed in the paper's appendix next to a table with the status of every result, and can be
+published elsewhere (for example in the arXiv comment field). Anyone who has the paper's supplementary files
+can recompute it with the small program in this repository and see whether anything has changed since.
+A person's confirmation stays valid only as long as the statement it was given for is unchanged: edit the
+theorem or a definition it uses, and the confirmation is shown as *stale*. Nothing is hidden, and a result
+without a confirmation is simply listed as not yet attested. What the ledger does *not* do is prove the
+results correct or decide whether a formal statement means what the text means; that remains the job of the
+people who attest. It makes it checkable what was checked, by whom, and what has changed since.
 
 Status: early prototype. The method is described in a paper in preparation.
 
 * `ledger.py`: the whole tool. Python >= 3.11, standard library only; copy it into your project.
 * `docs/FORMAT.md`: the normative format (hashing, node kinds, register). Other implementations
   should reproduce the same hashes.
-* `lean/Dump.lean`: Lean 4 extractor; dumps the declaration graph, exact kernel terms and axioms.
+* `lean/Dump.lean`: reads a Lean project and writes out its theorems and definitions, the exact proof objects
+  the Lean checker accepted, and the axioms they use, so that they can be fingerprinted.
 * `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
 * `examples/toy`: a hand-made project; `python3 ledger.py -C examples/toy status`.
 
@@ -60,7 +76,7 @@ the two-column `quantumarticle` class.
 
 ## What it does and does not establish
 
-It binds each claim to the exact kernel terms, scripts and cited statements it rests on, and
+It binds each claim to the exact proof objects, scripts and cited statements it rests on, and
 makes any later change visible. It does not tell you that a statement means what the paper
 means; that is what attestation is for, and an attestation is only as good as the person who
 signs it. There is no PKI: accountability comes from publishing the root under the authors' names.
