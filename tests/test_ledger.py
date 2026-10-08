@@ -353,6 +353,11 @@ class Latex(Toy):
         self.assertNotIn("not mathematics", ctx)                                # the explainer box is dropped
         self.assertIn("\\tag{\\ref{eq:g}}", ctx)
 
+    def test_excerpts_get_balanced_environments(self):
+        self.assertEqual(lg.balance_envs("a\\begin{proof}b"), "a\\begin{proof}b\n\\end{proof}")
+        self.assertEqual(lg.balance_envs("a\\end{proof}b"), "ab")
+        self.assertEqual(lg.balance_envs("\\begin{a}\\begin{b}x\\end{b}\\end{a}"), "\\begin{a}\\begin{b}x\\end{b}\\end{a}")
+
     def test_lean_text_is_made_safe_for_latex(self):
         t = lg.lean_to_tex("theorem t (n : \u2115) : \u2200 x, x \u2264 n_1 := by\n  simp")
         self.assertIn("\\ensuremath{\\forall}", t)

@@ -381,6 +381,23 @@ def drop_envs(text, names):
     return "".join(pieces), (lambda pos: pos - sum(b - a for a, b in spans if b <= pos))
 
 
+def balance_envs(text):
+    """Make the \\begin/\\end pairs of an excerpt match: an \\end without its \\begin is dropped, an unclosed \\begin is
+    closed at the end (a paragraph boundary can cut through a proof or an itemize)."""
+    stack, drop = [], []
+    for m in re.finditer(r"\\(begin|end)\{([A-Za-z]+\*?)\}", text):
+        if m.group(1) == "begin":
+            stack.append(m.group(2))
+        elif m.group(2) in stack:
+            while stack.pop() != m.group(2):
+                pass
+        else:
+            drop.append(m.span())
+    for a, b in reversed(drop):
+        text = text[:a] + text[b:]
+    return text + "".join(f"\n\\end{{{name}}}" for name in reversed(stack))
+
+
 def statement_context(label, parsed, skip=()):
     """For a label inside a display-math environment: the whole paragraph around it (the sentence that gives the
     equation its meaning and hypotheses), retagged by retag_math. None if `label` is not in a math environment."""
@@ -406,7 +423,7 @@ def statement_context(label, parsed, skip=()):
         if begin - left > 2500:
             left = lefts[-1] if lefts else 0
         right = min([g.start() for g in gaps if g.start() >= end] or [len(text)])
-        return retag_math(text[left:right]).strip()
+        return balance_envs(retag_math(text[left:right])).strip()
     return None
 
 
@@ -1241,7 +1258,7 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
             where.append(f"{ref or tex_esc(lab)} (p.~\\pageref{{{lab}}})")
         att = L.attestation_state(n)
         atts = "; ".join(f"{lvl.upper()} by {tex_esc(p)}" + ("" if cur else " (stale)") for p, lvl, _, cur in att) or "not yet attested"
-        out.append("\\clearpage")
+        out.append("\\clearpage\\onecolumn")  # again: a page break inside one-column mode can fall back to two columns (ltxgrid classes)
         out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\label{{rv:{n}}}\\par\\smallskip")
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
                    f"\\textbf{{Evidence}} {tex_esc(c.get('evidence', 'E5'))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
@@ -1272,7 +1289,7 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
             out.append("\\par\\medskip{\\large\\bfseries Lean statement} {\\small(source extract: definitions, then the statement)}\\par\\smallskip")
             out.append(lean_to_tex(text.strip("\n")))
     if L.scope_hyps:
-        out.append("\\clearpage{\\Large\\bfseries Hypotheses}\\par\\smallskip")
+        out.append("\\clearpage\\onecolumn{\\Large\\bfseries Hypotheses}\\par\\smallskip")
         for h in L.scope_hyps:
             meta = L.hypotheses.get(h, {})
             out.append(f"\\noindent\\textbf{{\\texttt{{{tex_esc(h)}}}}}\\quad cites: {tex_esc(', '.join(meta.get('cites', [])) or 'nothing')}.\\par")
