@@ -60,10 +60,12 @@
 
 % ---- cells ---------------------------------------------------------------
 \newcommand{\LedgerNoAtt}{\textit{not yet attested}}
-% \LedgerAtt{level}{person}{date}{current|stale}{signature state}
+% \LedgerAtt{level}{person}{date}{current|stale}{signature state}: two lines, level/date/status above the person.
+% \LedgerAtts stacks several of them in a nested tabular aligned at its top line with the rest of the row.
+\newcommand{\LedgerAtts}[1]{\begin{tabular}[t]{@{}l@{}}#1\end{tabular}}
 \newcommand{\LedgerAtt}[5]{%
-  \csname ledgercheck@lvl@#1\endcsname\ #2 #3\csname ledgercheck@st@#4\endcsname
-  \csname ledgercheck@sig@#5\endcsname}
+  \csname ledgercheck@lvl@#1\endcsname\ #3\csname ledgercheck@st@#4\endcsname\\
+  #2\csname ledgercheck@sig@#5\endcsname}
 \newcommand{\ledgercheck@sig@signed}{\ {\scriptsize[signed]}}
 \newcommand{\ledgercheck@sig@unsigned}{}
 \expandafter\newcommand\csname ledgercheck@sig@unknown-key\endcsname{}
@@ -91,7 +93,7 @@
 % a long entry runs into the margin instead of into another column
 \newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
 \newcommand{\LedgerRow}[6]{%
-  \ledgercheck@mb{5.5cm}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} &
+  \ledgercheck@mb{6.2cm}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} &
   \ledgercheck@mb{4.25cm}{#4} & \ledgercheck@mb{0.5cm}{#5} & #6 \\}
 % the status table comes in chunks, each a plain tabular with its own header (neither longtable nor
 % supertabular nor p-columns work in the two-column quantumarticle class); pages break between chunks

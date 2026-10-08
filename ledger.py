@@ -851,10 +851,9 @@ def cmd_tex(L, args):
         cell = f"\\LedgerLeanCell{{{ls if ls != '-' else 'none'}}}"
         if ls == "assumes" and L.claim_hypotheses(n):
             cell = "\\LedgerLeanGiven{" + ", ".join(hkey[h] for h in sorted(L.claim_hypotheses(n), key=lambda h: hkey[h])) + "}"
-        att = "; ".join(
+        att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{{L.signature_of(n, p)}}}"
-            for p, lvl, date, cur in st
-        ) or "\\LedgerNoAtt"
+            for p, lvl, date, cur in st) + "}") if st else "\\LedgerNoAtt"
         ref = reference(c, lab)
         res = (f"{ref} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}" if ref else f"\\texttt{{{tex_esc(lab)}}}") \
             + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
@@ -873,9 +872,10 @@ def cmd_tex(L, args):
         meta = L.hypotheses.get(h, {})
         lab = meta.get("label")
         ref = (reference_tex(lab, [x for v in L.parsed.values() for x in v]) if lab else None) or "---"
-        att = "; ".join(
+        hst = L.hypothesis_state(h)
+        att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{unsigned}}"
-            for p, lvl, date, cur in L.hypothesis_state(h)) or "\\LedgerNoAtt"
+            for p, lvl, date, cur in hst) + "}") if hst else "\\LedgerNoAtt"
         hrows.append(f"\\LedgerHypRow{{{hkey[h]}}}{{{ref}}}{{\\texttt{{{tex_esc(h)}}}}}{{{tex_esc(', '.join(meta.get('cites', [])) or '---')}}}{{{att}}}%")
     nknown = sum(L.known_theorem(h) for h in L.scope_hyps)
     allparsed = [x for v in L.parsed.values() for x in v]
