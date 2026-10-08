@@ -949,6 +949,8 @@ def cmd_tex(L, args):
         cell = f"\\LedgerLeanCell{{{ls if ls != '-' else 'none'}}}"
         if ls == "assumes" and L.claim_hypotheses(n):
             cell = "\\LedgerLeanGiven{" + ", ".join(hkey[h] for h in sorted(L.claim_hypotheses(n), key=lambda h: hkey[h])) + "}"
+        pvs = L.proverif_status(n)
+        pvcell = f"\\LedgerProverifCell{{{pvs if pvs != '-' else 'none'}}}"
         att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{{L.signature_of(n, p)}}}"
             for p, lvl, date, cur in st) + "}") if st else "\\LedgerNoAtt"
@@ -956,7 +958,7 @@ def cmd_tex(L, args):
         res = (f"{ref} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}" if ref else f"\\texttt{{{tex_esc(lab)}}}") \
             + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
         rows.append(f"\\LedgerRow{{{res}}}{{{c.get('evidence', 'E5')}}}{{{L.stmt[n][1]}}}"
-                    f"{{{cell}}}{{{len(L.register[n])}}}{{{att}}}")
+                    f"{{{cell}}}{{{pvcell}}}{{{len(L.register[n])}}}{{{att}}}")
     counted = [(n, p) for n in names for p, *_ in L.attestation_state(n)]
     nsigned = sum(L.signature_of(n, p) == "signed" for n, p in counted)
     keyrows = []

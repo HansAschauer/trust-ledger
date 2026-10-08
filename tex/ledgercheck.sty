@@ -89,17 +89,24 @@
 \newcommand{\ledgercheck@lean@sorry}{\textbf{contains sorry}}
 \newcommand{\ledgercheck@lean@missing}{\textbf{declaration missing}}
 \newcommand{\ledgercheck@lean@none}{---}
+% ProVerif column: same neutral style; a failed query is a specification finding, shown plainly, not as an alarm
+\newcommand{\LedgerProverifCell}[1]{\csname ledgercheck@proverif@#1\endcsname}
+\newcommand{\ledgercheck@proverif@ok}{query true}
+\newcommand{\ledgercheck@proverif@false}{\textbf{query false}}
+\newcommand{\ledgercheck@proverif@unproved}{cannot be proved}
+\newcommand{\ledgercheck@proverif@missing}{\textbf{query missing}}
+\newcommand{\ledgercheck@proverif@none}{---}
 % fixed cell widths keep the columns aligned from chunk to chunk; the attestation column is last, so
 % a long entry runs into the margin instead of into another column
 \newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
-\newcommand{\LedgerRow}[6]{%
+\newcommand{\LedgerRow}[7]{%
   \ledgercheck@mb{6.2cm}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} &
-  \ledgercheck@mb{4.25cm}{#4} & \ledgercheck@mb{0.5cm}{#5} & #6 \\}
+  \ledgercheck@mb{2.7cm}{#4} & \ledgercheck@mb{1.3cm}{#5} & \ledgercheck@mb{0.5cm}{#6} & #7 \\}
 % the status table comes in chunks, each a plain tabular with its own header (neither longtable nor
 % supertabular nor p-columns work in the two-column quantumarticle class); pages break between chunks
 \newcommand{\LedgerTable}[1]{\par\noindent{\setlength{\tabcolsep}{3pt}%
-  \begin{tabular}{@{}lllll@{}}
-    \toprule Result & Ev. Stmt. & Lean & Reg. & Attestation\\ \midrule
+  \begin{tabular}{@{}llllll@{}}
+    \toprule Result & Ev. Stmt. & Lean & ProVerif & Reg. & Attestation\\ \midrule
     #1
     \bottomrule
   \end{tabular}}\par\vskip 4pt plus 6pt}
@@ -186,8 +193,10 @@
     \texttt{manual} = written in the ledger. Lean: \emph{checked} = accepted by the Lean kernel with the
     standard axioms only; \emph{given} [H$k$] = in addition the hypothesis with key H$k$ in the Hypotheses table is
     assumed, not proved;
-    --- = no Lean declaration. Reg.: number of open assumptions on which the result rests.
-    A result covering several labels appears once per label.
+    --- = no Lean declaration. ProVerif: \emph{query true/false} = the named query of the cited model,
+    checked by the tool (a false query is an attack on that model, not a proof of insecurity of the
+    protocol); \emph{cannot be proved} = inconclusive; --- = no ProVerif query. Reg.: number of open
+    assumptions on which the result rests. A result covering several labels appears once per label.
   \else
     \par\noindent{\color{ledgerred}\textbf{UNSEALED DRAFT.}} No ledger root file
     (\texttt{ledger-\ledgercheck@paper-root.tex}) was found; run
