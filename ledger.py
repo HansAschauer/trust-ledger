@@ -181,9 +181,12 @@ def tex_sources(main, search, excluded):
             continue
         text = strip_comments(cur.read_text(errors="replace"))
         for m in INPUT_RE.finditer(text):
-            r = resolve(m.group(1).strip(), cur, ("", ".tex"))
+            name = m.group(1).strip()
+            if "\\" in name or "#" in name:  # built from macros at run time (typical inside a .sty): not resolvable statically
+                continue
+            r = resolve(name, cur, ("", ".tex"))
             if r is None:
-                unresolved.append(m.group(1).strip())
+                unresolved.append(name)
             else:
                 todo.append(r)
         for m in BIB_RE.finditer(text):

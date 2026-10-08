@@ -294,6 +294,15 @@ class Latex(Toy):
         self.assertLess(st.index("lem:succ"), st.index("lem:late"))      # chapter (inputted earlier) first
         self.assertLess(st.index("eq:f"), st.index("lem:late"))
 
+    def test_inputs_built_from_macros_are_not_reported_as_missing(self):
+        (self.p / "paper" / "local.sty").write_text("\\ProvidesPackage{local}\n\\newcommand{\\f}{x}\n\\input{\\f.tex}\n\\input{data_#1.tex}\n")
+        self.tex("main.tex", lambda t: t.replace("\\begin{document}", "\\usepackage{local}\n\\begin{document}"))
+        L = self.L()
+        self.assertIn("paper/local.sty", L.paper_nodes["toy"]["files"])        # local packages are hashed
+        self.assertEqual(L.unresolved["toy"], [])                                # their run-time inputs are not "missing"
+        self.tex("main.tex", lambda t: t.replace("\\input{chapters/results}", "\\input{chapters/results}\\input{no/such/file}"))
+        self.assertEqual(self.L().unresolved["toy"], ["no/such/file"])          # a plain missing file still is
+
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
 
