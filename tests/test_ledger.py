@@ -184,6 +184,7 @@ class Latex(Toy):
         lg.main(["-C", str(self.p), "-P", "toy", "tex"])
         st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
         self.assertIn("\\def\\LedgerNUncovered{1}", st)
+        self.assertIn("Lemma~\\ref{lem:forgotten}", st)                   # with type and number, not the label alone
 
     def test_status_notes_an_outdated_root_file(self):
         import io, contextlib
@@ -215,9 +216,9 @@ class Latex(Toy):
         self.assertTrue(L.known_theorem("Toy.BanachProp"))
         lg.main(["-C", str(self.p), "-P", "toy", "tex"])
         st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
-        self.assertIn("LedgerLeanCell{assumes-known}", st)
+        self.assertIn("\\LedgerLeanGiven{H1}", st)                       # compact: a key into the hypotheses table
         self.assertIn("\\def\\LedgerNHypKnown{1}", st)
-        self.assertIn("\\LedgerHypRow{Lemma~\\ref{lem:banach}}", st)
+        self.assertIn("\\LedgerHypRow{H1}{Lemma~\\ref{lem:banach}}", st)
         # the register entry stays: the formalisation still assumes it
         self.assertIn("hyp:Toy.BanachProp", L.register["thm-twice"])
 
@@ -259,7 +260,7 @@ class Latex(Toy):
         text = subprocess.run(["pdftotext", "min.pdf", "-"], cwd=self.p / "paper", capture_output=True, text=True).stdout
         self.assertIn("Evidence ledger", text)
         self.assertIn("Hypotheses", text)
-        self.assertIn("known thm.", text)
+        self.assertIn("given [H1]", text)
 
     def test_rows_follow_the_compiled_document_not_the_file_order(self):
         # a label that sits in main.tex AFTER the \\input line is later in the document than the chapter's labels
