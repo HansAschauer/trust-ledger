@@ -4,3 +4,14 @@ examples/*/ledger/lock.json
 examples/*/paper/ledger/
 examples/*/ledger/attestations.toml
 examples/*/ledger/lock*.json
+formal/.lake/
+formal/lake-manifest.json
+paper/build/
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.pdf

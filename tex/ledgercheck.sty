@@ -151,6 +151,10 @@
 
     \par\medskip
     {\footnotesize\LedgerChunks}
+    \ifnum\LedgerNUncovered>0
+      \par\medskip\noindent\textbf{Not in the ledger.} \LedgerNUncovered{} labelled theorem-like results of this
+      paper have no entry in the ledger, so nothing is claimed about them here: \LedgerUncovered.
+    \fi
     \ifnum\LedgerNKeys>0
       \par\medskip\noindent\textbf{Keys.} Signatures are optional and use OpenSSH keys. A key is introduced
       by this paper (the authors' keys), by vouching, or by a recorded source such as a homepage; there is no

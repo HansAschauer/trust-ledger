@@ -176,6 +176,24 @@ class Latex(Toy):
         self.tex("chapters/results.tex", lambda t: t + "% changed\n")
         self.assertTrue(any("older than the sources" in e for e in self.L().errors))
 
+    def test_uncovered_results_are_reported(self):
+        self.tex("chapters/results.tex", lambda t: t + "\\begin{lemma}\\label{lem:forgotten} Not in the ledger.\\end{lemma}\n"
+                                         "\\begin{remark}\\label{rem:note} A remark.\\end{remark}\n")
+        L = self.L()
+        self.assertEqual(L.uncovered(), ["lem:forgotten"])         # remarks and equations need no entry
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("\\def\\LedgerNUncovered{1}", st)
+
+    def test_status_notes_an_outdated_root_file(self):
+        import io, contextlib
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        self.tex("main.tex", lambda t: t.replace("Some prose", "Other prose"))          # source moved on after sealing
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            lg.main(["-C", str(self.p), "-P", "toy", "status"])
+        self.assertIn("shows an older root", err.getvalue())
+
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
 

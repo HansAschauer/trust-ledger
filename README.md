@@ -29,6 +29,9 @@ Status: early prototype. The method is described in a paper in preparation.
 * `lean/Dump.lean`: reads a Lean project and writes out its theorems and definitions, the exact proof objects
   the Lean checker accepted, and the axioms they use, so that they can be fingerprinted.
 * `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
+* `paper/`: the paper that describes the method (`make paper`). It applies the method to itself: its theorems are
+  checked in `formal/` (Lean, core library only, `make formal`), linked by `ledger/`, and the appendix
+  "Evidence ledger" at the end of the paper is generated from that ledger.
 * `examples/toy`: a hand-made project; `python3 ledger.py -C examples/toy status`.
 
 ## Use
