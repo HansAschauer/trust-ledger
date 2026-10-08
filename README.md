@@ -21,7 +21,7 @@ without a confirmation is simply listed as not yet attested. What the ledger doe
 results correct or decide whether a formal statement means what the text means; that remains the job of the
 people who attest. It makes it checkable what was checked, by whom, and what has changed since.
 
-Status: early prototype. The method is described in a paper in preparation.
+Status: early prototype. The method is described in the paper in `paper/` (draft).
 
 * `ledger.py`: the whole tool. Python >= 3.11, standard library only; copy it into your project.
 * `docs/FORMAT.md`: the normative format (hashing, node kinds, register). Other implementations
