@@ -78,6 +78,16 @@ paper source (e.g. in a publish script), load it at the end of the preamble; a p
 The table uses plain `tabular`s in chunks because `longtable`, `supertabular` and `p`-columns fail in
 the two-column `quantumarticle` class.
 
+## Review packets
+
+`python3 ledger.py -P NAME review` builds a PDF for the person who is about to attest: for every claim of the paper,
+the statement **typeset in the paper's own macros with the paper's numbers and page** (an equation comes with its
+paragraph and the paragraph before it), the model-generated back-translation of the Lean statement, an optional
+model-written assessment (`ledger/assessments.toml`) and the Lean text. It builds the paper once in a scratch
+directory for its `.aux`, so it never touches your build files, and it needs `latexmk` and `pdflatex`.
+Configure it with a `[review]` table (`readings`, `extracts`, `skip_envs` for reading aids such as explainer boxes).
+Readings and assessments are generated nodes of the ledger: part of the root, never part of a statement hash.
+
 ## What it does and does not establish
 
 It binds each claim to the exact proof objects, scripts and cited statements it rests on, and

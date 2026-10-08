@@ -12,12 +12,13 @@ Single file, Python >= 3.11, standard library only. Normative format: docs/FORMA
 
 DIR is the project root; it must contain ledger/ledger.toml.
 """
-import argparse, base64, datetime, hashlib, json, re, subprocess, sys, tempfile, tomllib
+import argparse, base64, datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, tomllib, unicodedata
 from pathlib import Path
 
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
+ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 
@@ -329,6 +330,141 @@ def statement_of(label, parsed):
     return None, f"label {label} not found in the paper source"
 
 
+def statement_source(label, parsed):
+    """(environment name, optional argument, body) of the statement/display-math environment containing
+    \\label{label}, with comments (already stripped) and \\label commands removed, line breaks kept so the
+    body can be typeset in the paper's own macros. None if the label is not found or not in an environment."""
+    pat = re.compile(r"\\label\{" + re.escape(label) + r"\}")
+    for text, envs in parsed:
+        m = pat.search(text)
+        if not m:
+            continue
+        best = None
+        for e in envs:
+            if e[1] <= m.start() < e[2] and (best is None or e[1] > best[1]):
+                best = e
+        if best is None:
+            return None
+        body = re.sub(r"\\label\{[^}]*\}", "", text[best[1]:best[2]]).strip()
+        opt = ""
+        om = re.match(r"\[((?:[^\[\]{}]|\{[^{}]*\})*)\]", body)
+        if om and best[0].rstrip("*") not in MATH_ENVS:
+            opt, body = om.group(1), body[om.end():].strip()
+        return best[0].rstrip("*"), opt, body
+    return None
+
+
+def retag_math(text):
+    """Make the display-math environments of `text` unnumbered and show each \\label as an explicit \\tag, so that the
+    paper's own equation numbers appear (via \\ref, resolved from the paper's .aux) without the packet's counters."""
+    def starred(m):
+        return f"\\{m.group(1)}{{{m.group(2)}*}}" if not m.group(2).endswith("*") and m.group(2) in MATH_ENVS else m.group(0)
+    text = re.sub(r"\\(begin|end)\{([A-Za-z]+\*?)\}", starred, text)
+    inside = []
+
+    def tag_labels(m):
+        return re.sub(r"\\label\{([^}]*)\}", r"\\tag{\\ref{\1}}", m.group(0))
+    text = re.sub(r"\\begin\{(" + "|".join(MATH_ENVS) + r")\*\}.*?\\end\{\1\*\}", tag_labels, text, flags=re.S)
+    return re.sub(r"\\label\{[^}]*\}", "", text)  # labels outside display math (sections, ...) are dropped
+
+
+def drop_envs(text, names):
+    """`text` without the environments named in `names` (reading aids such as explainer boxes that are not part of the
+    paper's mathematics), and a function mapping a position of the old text to the new one."""
+    spans = sorted((m.start(), m.end()) for nm in names
+                   for m in re.finditer(r"\\begin\{%s\}.*?\\end\{%s\}" % (re.escape(nm), re.escape(nm)), text, re.S))
+    pieces, last = [], 0
+    for a, b in spans:
+        if a >= last:
+            pieces.append(text[last:a]); last = b
+    pieces.append(text[last:])
+    return "".join(pieces), (lambda pos: pos - sum(b - a for a, b in spans if b <= pos))
+
+
+def statement_context(label, parsed, skip=()):
+    """For a label inside a display-math environment: the whole paragraph around it (the sentence that gives the
+    equation its meaning and hypotheses), retagged by retag_math. None if `label` is not in a math environment."""
+    pat = re.compile(r"\\label\{" + re.escape(label) + r"\}")
+    for text, envs in parsed:
+        m = pat.search(text)
+        if not m:
+            continue
+        best = None
+        for e in envs:
+            if e[1] <= m.start() < e[2] and (best is None or e[1] > best[1]):
+                best = e
+        if best is None or best[0].rstrip("*") not in MATH_ENVS:
+            return None
+        begin = text.rfind("\\begin{" + best[0] + "}", 0, best[1])
+        end = text.find("\\end{" + best[0] + "}", best[2]) + len("\\end{" + best[0] + "}")
+        if skip:
+            text, remap = drop_envs(text, skip)
+            begin, end = remap(begin), remap(end)
+        gaps = [g for g in re.finditer(r"\n(?:[ \t]*\n)+", text)]  # a run of blank lines is one boundary
+        lefts = [g.end() for g in gaps if g.end() <= begin]
+        left = lefts[-2] if len(lefts) >= 2 else 0  # also the paragraph before: it usually defines what the equation uses
+        if begin - left > 2500:
+            left = lefts[-1] if lefts else 0
+        right = min([g.start() for g in gaps if g.start() >= end] or [len(text)])
+        return retag_math(text[left:right]).strip()
+    return None
+
+
+# Lean source text in LaTeX: symbols that Lean/Mathlib sources use, typeset in math mode
+LEAN_SYMBOLS = {
+    "∀": r"\forall", "∃": r"\exists", "→": r"\to", "←": r"\leftarrow", "↔": r"\leftrightarrow", "⟶": r"\longrightarrow",
+    "∧": r"\land", "∨": r"\lor", "¬": r"\neg", "≤": r"\le", "≥": r"\ge", "≠": r"\ne", "<": "<", ">": ">",
+    "∈": r"\in", "∉": r"\notin", "⊆": r"\subseteq", "⊂": r"\subset", "∪": r"\cup", "∩": r"\cap", "∅": r"\emptyset",
+    "∑": r"\sum", "∏": r"\prod", "∫": r"\int", "√": r"\surd", "∞": r"\infty", "×": r"\times", "·": r"\cdot",
+    "∘": r"\circ", "⊗": r"\otimes", "⊕": r"\oplus", "†": r"\dagger", "ᵀ": r"^{T}", "‖": r"\|", "∣": r"\mid",
+    "⟨": r"\langle", "⟩": r"\rangle", "⌊": r"\lfloor", "⌋": r"\rfloor", "⌈": r"\lceil", "⌉": r"\rceil",
+    "ℝ": r"\mathbb{R}", "ℕ": r"\mathbb{N}", "ℂ": r"\mathbb{C}", "ℤ": r"\mathbb{Z}", "ℚ": r"\mathbb{Q}",
+    "≈": r"\approx", "≡": r"\equiv", "∼": r"\sim", "↦": r"\mapsto", "⊢": r"\vdash", "⊤": r"\top", "⊥": r"\bot",
+    "⁻": r"^{-}", "⁺": r"^{+}", "¹": r"^{1}", "²": r"^{2}", "³": r"^{3}", "⁰": r"^{0}", "ⁿ": r"^{n}", "ᵏ": r"^{k}",
+    "₀": r"_{0}", "₁": r"_{1}", "₂": r"_{2}", "₃": r"_{3}", "₄": r"_{4}", "₅": r"_{5}", "₆": r"_{6}", "₇": r"_{7}",
+    "₈": r"_{8}", "₉": r"_{9}", "ₙ": r"_{n}", "ₖ": r"_{k}", "ᵢ": r"_{i}", "ⱼ": r"_{j}", "ₐ": r"_{a}", "ₘ": r"_{m}",
+    "𝟙": "1", "∂": r"\partial", "∇": r"\nabla", "⋯": r"\cdots", "…": r"\ldots", "‹": "<", "›": ">",
+    "∗": "*", "⊓": r"\sqcap", "⊔": r"\sqcup", "∖": r"\setminus", "≃": r"\simeq", "≅": r"\cong", "∠": r"\angle",
+    "⇒": r"\Rightarrow", "⇔": r"\Leftrightarrow", "⟹": r"\Longrightarrow", "↑": r"\uparrow", "↓": r"\downarrow",
+    "★": r"\star", "∙": r"\bullet", "•": r"\bullet", "“": "``", "”": "''", "‘": "`", "’": "'", "–": "--", "—": "---",
+}
+
+
+def uni_tex(ch):
+    """One character of Lean source as TeX for a monospaced block (text-mode safe)."""
+    if ch in TEX_SPECIAL:
+        return TEX_SPECIAL[ch]
+    if ord(ch) < 128:
+        return ch
+    if ch in LEAN_SYMBOLS:
+        return "\\ensuremath{" + LEAN_SYMBOLS[ch] + "}"
+    name = unicodedata.name(ch, "")
+    if name.startswith("GREEK"):
+        word = name.split()[-1].lower()
+        word = {"lamda": "lambda", "epsilon": "varepsilon"}.get(word, word)
+        return "\\ensuremath{\\" + (word.capitalize() if "CAPITAL" in name else word) + "}"
+    if unicodedata.category(ch) == "Mn":
+        return ""
+    if ord(ch) < 256:
+        return ch
+    return f"[U+{ord(ch):04X}]"
+
+
+def lean_to_tex(text):
+    """Lean source as a block of typeset monospaced lines (indentation kept, long lines wrap)."""
+    out = []
+    for line in text.splitlines():
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        if not stripped:
+            out.append("\\vspace{0.6ex}")
+            continue
+        out.append(f"\\hangindent={indent + 2}\\lttw\\hangafter=1\\hspace*{{{indent}\\lttw}}"
+                   + "".join(uni_tex(ch) for ch in stripped) + "\\par")
+    return ("{\\ttfamily\\scriptsize\\raggedright\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}"
+            "\\settowidth{\\lttw}{\\texttt{x}}\n" + "\n".join(out) + "}")
+
+
 # ---------------------------------------------------------------- loading
 class Ledger:
     def __init__(self, root, paper=None):
@@ -348,7 +484,7 @@ class Ledger:
 
     def load_human(self):
         self.claims, self.citations, self.assertions, self.attestations, self.keys = {}, {}, {}, [], {}
-        self.hypotheses = {}
+        self.hypotheses, self.assessments = {}, {}
         for f in sorted(self.dir.glob("*.toml")):
             if f.name == "ledger.toml":
                 continue
@@ -359,6 +495,7 @@ class Ledger:
             self.attestations += t.get("attestation", [])
             self.keys.update(t.get("key", {}))
             self.hypotheses.update(t.get("hypothesis", {}))
+            self.assessments.update(t.get("assessment", {}))
         for n, c in self.claims.items():
             if c.get("evidence", "E5") not in EVIDENCE:
                 self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
@@ -370,6 +507,9 @@ class Ledger:
                 self.errors.append(f"attestation on {a.get('claim')}: unknown level {a.get('level')!r}")
             elif a["level"] == "yellow" and not a.get("reason"):
                 self.errors.append(f"attestation on {a.get('claim')}: yellow needs a reason")
+        for n, a in self.assessments.items():
+            if a.get("verdict") not in ASSESSMENT_VERDICTS:
+                self.errors.append(f"assessment {n}: verdict must be one of {', '.join(ASSESSMENT_VERDICTS)}")
         for k, key in self.keys.items():
             try:
                 key["fingerprint"] = fingerprint(key["public"])
@@ -640,6 +780,22 @@ class Ledger:
                 else:
                     self.errors.append(f"claim {n}: unknown citation {x}")
             d += ["assert:" + a for a, v in self.assertions.items() if v["claim"] == n]
+            rv = self.cfg.get("review", {})
+            if rv.get("readings"):  # a model's back-translation of the Lean statement: an aid, never part of the spec hash
+                rp = self.root / rv["readings"].format(claim=n)
+                if rp.is_file():
+                    rid = "reading:" + str(rp.relative_to(self.root))
+                    payload[rid] = dict(kind="reading", provenance="generated", content=dict(
+                        path=str(rp.relative_to(self.root)), sha256=sha_file(rp), produced_by=rv.get("readings_by", "")))
+                    deps[rid] = []
+                    d.append(rid)
+            if n in self.assessments:  # a model's comparison of paper text, Lean statement and back-translation
+                a = self.assessments[n]
+                payload["assess:" + n] = dict(kind="assessment", provenance="generated", content=dict(
+                    claim=n, model=a.get("model", ""), date=a.get("date", ""), verdict=a.get("verdict", ""),
+                    notes=a.get("notes", "")))
+                deps["assess:" + n] = []
+                d.append("assess:" + n)
             for u in c.get("uses", []):
                 if u in self.claims:
                     d.append("claim:" + u)
@@ -681,7 +837,8 @@ class Ledger:
         for n, c in self.claims.items():
             cp[n] = dict(text=self.stmt[n][0],
                          lean=[[x, self.spec.get("lean:" + x, "")] for x in sorted(c.get("lean", []))],
-                         others=[[i, self.full[i]] for i in sorted(deps["claim:" + n]) if not i.startswith(("lean:", "claim:"))])
+                         others=[[i, self.full[i]] for i in sorted(deps["claim:" + n])
+                                 if not i.startswith(("lean:", "claim:", "reading:", "assess:"))])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
         self.hspec = {h: H("hyp-spec", dict(text=self.hstmt[h][0], lean=self.spec.get("lean:" + h, ""),
@@ -1012,6 +1169,198 @@ def cmd_tex(L, args):
     return 0
 
 
+
+
+# ---------------------------------------------------------------- review packet
+ITALIC_ENVS = {"theorem", "lemma", "proposition", "corollary", "claim", "fact", "observation", "conjecture"}
+VERDICT_TEXT = {"consistent": "CONSISTENT", "partial": "PARTIAL", "check": "CHECK", "mismatch": "MISMATCH", "unclear": "UNCLEAR"}
+
+
+def lean_status_words(L, n):
+    ls = L.lean_status(n)
+    if ls == "ok":
+        return "checked, standard axioms only"
+    if ls == "assumes":
+        return "checked, given " + ", ".join(tex_esc(h) for h in L.claim_hypotheses(n))
+    return {"-": "no Lean declaration", "sorry": "CONTAINS SORRY", "axioms": "extra axioms",
+            "missing": "declaration missing"}.get(ls, ls)
+
+
+def review_statement_tex(L, lab, parsed, seen):
+    skip = L.cfg.get("review", {}).get("skip_envs", [])
+    """The paper's statement for `lab`, typeset in the paper's own macros with the paper's number."""
+    src = statement_source(lab, parsed)
+    if src is None:
+        return f"\\noindent\\textit{{(label {tex_esc(lab)} not found in the source)}}\\par"
+    env, opt, body = src
+    if env in MATH_ENVS:
+        ctx = statement_context(lab, parsed, skip)
+        if ctx in seen:
+            return ""
+        seen.add(ctx)
+        return f"\\noindent\\textbf{{Equation~(\\ref{{{lab}}}), with the paragraph before it and its own:}}\\par\\smallskip\\noindent {ctx}\\par"
+    body = retag_math(body)
+    if (env, body) in seen:
+        return ""
+    seen.add((env, body))
+    word = KIND_WORDS.get(env) or L.kind_words.get(env) or env.capitalize()
+    head = f"{word}~\\ref{{{lab}}}" + (f" ({opt})" if opt else "")
+    style = "\\itshape " if env in ITALIC_ENVS else ""
+    return f"\\noindent\\textbf{{{head}.}}~{{{style}{body}\\par}}"
+
+
+def review_body(L, only=None, with_lean=True):
+    """LaTeX body of the review packet of the selected paper: for each claim the paper's statement, the model's
+    back-translation of the Lean statement, a model's short assessment and the Lean text."""
+    rv = L.cfg.get("review", {})
+    parsed = L.parsed.get(L.paper) or [x for v in L.parsed.values() for x in v]
+    root = L.root
+    names = [n for n in L.claims if not only or n in only]
+    names.sort(key=lambda n: (L.label_position(L.claims[n]) or (1, 0), n))
+    out = [r"\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}",
+           r"\newlength{\lttw}", r"\onecolumn", r"\setlength{\parindent}{0pt}", r"\setlength{\parskip}{4pt}",
+           r"\pagestyle{plain}"]
+    out.append(r"{\Large\bfseries Review packet for the claims of the paper ``%s''}\par\medskip" % tex_esc(L.paper))
+    out.append(r"Ledger root of the paper (this packet is not part of it): \texttt{%s}.\par" % L.root_hash[:32])
+    out.append(r"""\medskip\textbf{How to use.} Each claim has its own page(s): \emph{In the paper} is the statement as typeset in the
+paper, with the paper's numbers and the page where it stands (page numbers refer to the plain build of the paper made for this packet). \emph{Back-translation}
+is what a model reads out of the Lean statement alone; \emph{Assessment} is a model's short comparison of the three. Both are
+generated aids and can share a model's blind spots; neither is an attestation. \emph{Lean statement} is the source the back-translation
+was made from. To attest after reading: \texttt{ledger.py -P %s attest CLAIM --person NAME --level yellow --reason spec}.\par
+\medskip\textbf{Verdicts.} CONSISTENT: no difference found between paper, back-translation and Lean text. PARTIAL: faithful where it formalises, but this claim covers only part of what the paper states under its label (the rest is in a sibling claim or not formalised; see the notes). CHECK: something specific to look at, see the notes.
+MISMATCH: a difference that probably needs a fix in the text or in the formalisation. UNCLEAR: could not be decided.\par
+\medskip\textbf{Claims} (page):\par\smallskip""" % tex_esc(L.paper))
+    idx = ", ".join(f"\\texttt{{{tex_esc(n)}}}~(\\pageref{{rv:{n}}})" for n in names)
+    out.append("{\\small " + idx + "}")
+    for n in names:
+        c = L.claims[n]
+        labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
+        where = []
+        for lab in labels:
+            ref = reference_tex(lab, parsed, L.kind_words)
+            where.append(f"{ref or tex_esc(lab)} (p.~\\pageref{{{lab}}})")
+        att = L.attestation_state(n)
+        atts = "; ".join(f"{lvl.upper()} by {tex_esc(p)}" + ("" if cur else " (stale)") for p, lvl, _, cur in att) or "not yet attested"
+        out.append("\\clearpage")
+        out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\label{{rv:{n}}}\\par\\smallskip")
+        out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
+                   f"\\textbf{{Evidence}} {tex_esc(c.get('evidence', 'E5'))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
+                   f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
+        out.append("{\\large\\bfseries In the paper}\\par\\smallskip")
+        seen = set()
+        if labels:
+            out += [review_statement_tex(L, lab, parsed, seen) for lab in labels]
+        else:
+            out.append("\\noindent\\textit{No label in the paper; text recorded in the ledger:} " + tex_esc(L.stmt[n][0]))
+        out.append("\\par\\medskip")
+        rd = rv.get("readings") and (root / rv["readings"].format(claim=n))
+        out.append("{\\large\\bfseries Back-translation of the Lean statement} {\\small(generated by a model from the Lean text alone)}\\par\\smallskip")
+        out.append(f"\\input{{readings/{n}}}" if rd and rd.is_file() else "\\noindent\\textit{No back-translation file for this claim.}")
+        out.append("\\par\\medskip")
+        a = L.assessments.get(n)
+        out.append("{\\large\\bfseries Assessment} {\\small(generated by a model; an aid for the reviewer, not an attestation)}\\par\\smallskip")
+        if a:
+            out.append(f"\\noindent\\textbf{{{VERDICT_TEXT.get(a.get('verdict'), a.get('verdict', '?'))}}} "
+                       f"{{\\small({tex_esc(a.get('model', '?'))}, {tex_esc(a.get('date', ''))})}}\\par\n{a.get('notes', '')}")
+        else:
+            out.append("\\noindent\\textit{No assessment yet.}")
+        ex = rv.get("extracts") and (root / rv["extracts"].format(claim=n))
+        if with_lean and ex and ex.is_file():
+            text = ex.read_text(errors="replace")
+            text = re.sub(r"\A\s*/-.*?-/\s*", "", text, count=1, flags=re.S) if text.lstrip().startswith("/-") else text
+            text = re.sub(r"(?m)^import .*\n", "", text)
+            out.append("\\par\\medskip{\\large\\bfseries Lean statement} {\\small(source extract: definitions, then the statement)}\\par\\smallskip")
+            out.append(lean_to_tex(text.strip("\n")))
+    if L.scope_hyps:
+        out.append("\\clearpage{\\Large\\bfseries Hypotheses}\\par\\smallskip")
+        for h in L.scope_hyps:
+            meta = L.hypotheses.get(h, {})
+            out.append(f"\\noindent\\textbf{{\\texttt{{{tex_esc(h)}}}}}\\quad cites: {tex_esc(', '.join(meta.get('cites', [])) or 'nothing')}.\\par")
+            if meta.get("label"):
+                out.append(review_statement_tex(L, meta["label"], parsed, set()))
+            d = L.decls.get(h, {})
+            if with_lean and d.get("value"):
+                out.append(lean_to_tex(f"def {h} :=\n  {d['value']}"))
+            st = L.hypothesis_state(h)
+            out.append("\\noindent\\textit{Attestation as a known theorem:} " +
+                       ("; ".join(f"{lvl.upper()} by {tex_esc(p)}" + ("" if cur else " (stale)") for p, lvl, _, cur in st) or "not yet attested") + "\\par\\medskip")
+    return "\n".join(out) + "\n"
+
+
+def cmd_review(L, args):
+    """Build the review packet PDF of one paper: statements side by side with the back-translations."""
+    if not L.paper:
+        sys.exit("review needs a paper: ledger.py -P PAPER review")
+    if L.errors:
+        for e in L.errors:
+            print("error:", e, file=sys.stderr)
+        return 1
+    pc = L.cfg["paper"][L.paper]
+    main = (L.root / pc["main"]).resolve()
+    search = [(L.root / d).resolve() for d in pc.get("texinputs", [])]
+    outdir = Path(args.out or L.cfg.get("review", {}).get("out", "review"))
+    outdir = outdir if outdir.is_absolute() else L.root / outdir
+    outdir.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="ledger-review-"))
+    dirs = [main.parent, *search]
+    env = dict(os.environ, TEXINPUTS=os.pathsep.join(f"{d}//" for d in dirs) + os.pathsep,
+               BIBINPUTS=os.pathsep.join(str(d) for d in dirs) + os.pathsep,
+               BSTINPUTS=os.pathsep.join(str(d) for d in dirs) + os.pathsep)
+    try:
+        if args.aux:
+            aux = Path(args.aux)
+        else:  # a plain build of the paper in a scratch directory gives the labels, numbers, pages and citations
+            print("building the paper once for its numbers and page references ...", file=sys.stderr)
+            # the paper's own ledger appendix (ledgercheck) is not needed for the numbers: switch it off
+            no_appendix = "-usepretex=\\AddToHook{begindocument/end}{\\ifcsname ledgercheck@placedtrue\\endcsname\\csname ledgercheck@placedtrue\\endcsname\\fi}"
+            r = subprocess.run(["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", no_appendix, f"-outdir={tmp / 'paper'}", str(main)],
+                               cwd=tmp, env=env, capture_output=True, text=True, errors="replace")
+            aux = tmp / "paper" / (main.stem + ".aux")
+            if not aux.exists():
+                print(r.stdout[-2000:], r.stderr[-2000:])
+                sys.exit("the paper did not build; pass --aux FILE to use an existing .aux")
+        work = tmp / "work"
+        (work / "readings").mkdir(parents=True)
+        shutil.copy(aux, work / "review.aux")
+        rv = L.cfg.get("review", {})
+        for n in L.claims:
+            if rv.get("readings"):
+                rp = L.root / rv["readings"].format(claim=n)
+                if rp.is_file():
+                    shutil.copy(rp, work / "readings" / f"{n}.tex")
+        only = set(args.claims.split(",")) if args.claims else None
+        body = review_body(L, only, with_lean=not args.no_lean)
+        (work / "review-body.tex").write_text(body)
+        # amsmath/amssymb: the packet uses starred display environments and \\tag, whatever the paper loads
+        inject = ("\\AddToHook{begindocument/before}{\\RequirePackage{amsmath,amssymb}}"
+                  "\\AddToHook{begindocument/end}{\\ifcsname ledgercheck@placedtrue\\endcsname\\csname ledgercheck@placedtrue\\endcsname\\fi"
+                  "\\input{review-body}\\end{document}}\\input{" + main.stem + "}")  # no ledger appendix in the packet (csname: '@' is not a letter here)
+        log = ""
+        paper_aux = (work / "review.aux").read_text(errors="replace")
+        for _ in range(2):  # the second pass settles \pageref
+            r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-jobname=review", inject], cwd=work, env=env,
+                               capture_output=True, text=True, errors="replace")
+            log = (work / "review.log").read_text(errors="replace") if (work / "review.log").exists() else r.stdout
+            # a pass overwrites review.aux with only its own labels; keep the paper's and add the packet's page labels
+            mine = [l for l in (work / "review.aux").read_text(errors="replace").splitlines() if l.startswith("\\newlabel{rv:")]
+            (work / "review.aux").write_text(paper_aux.rstrip("\n") + "\n" + "\n".join(mine) + "\n")
+        pdf = work / "review.pdf"
+        if not pdf.exists():
+            print(log[-3000:])
+            sys.exit("the packet did not build")
+        nerr = len(re.findall(r"(?m)^!", log))
+        target = outdir / f"{L.paper}-review.pdf"
+        shutil.copy(pdf, target)
+        shutil.copy(work / "review-body.tex", outdir / f"{L.paper}-review-body.tex")
+        print(f"{target}" + (f" ({nerr} LaTeX errors)" if nerr else ""))
+        if nerr:
+            (outdir / f"{L.paper}-review.log").write_text(log)
+            print(f"LaTeX reported {nerr} errors; log in {outdir / (L.paper + '-review.log')}", file=sys.stderr)
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def cmd_lock(L, args):
     if L.errors:
         for e in L.errors:
@@ -1158,6 +1507,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("status"); p.add_argument("--strict", action="store_true")
     sub.add_parser("lock"); sub.add_parser("verify"); sub.add_parser("extract"); sub.add_parser("tex")
+    p = sub.add_parser("review", help="build a review packet: paper statements next to back-translations and Lean text")
+    p.add_argument("--claims", help="comma-separated claim names (default: all in scope)")
+    p.add_argument("--out", help="output directory (default: [review] out, else ./review)")
+    p.add_argument("--aux", help="use this .aux of the paper instead of building the paper once")
+    p.add_argument("--no-lean", action="store_true", help="leave the Lean source text out")
     p = sub.add_parser("why"); p.add_argument("claim")
     p = sub.add_parser("attest"); p.add_argument("claim", nargs="?"); p.add_argument("--person", required=True)
     p.add_argument("--hypothesis", help="attest a hypothesis (e.g. that it is a known theorem) instead of a claim")

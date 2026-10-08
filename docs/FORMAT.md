@@ -10,7 +10,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `proverif-query`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `environment` |
+| `kind`       | `lean-decl`, `proverif-query`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `reading`, `assessment`, `environment` |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -153,6 +153,19 @@ result is a node of kind `hypothesis` (asserted) with content `{name, label, tex
 * The register entry is **not** removed (the formalisation still assumes it, and `Reg` is unchanged). The status
   table shows `given hyp. [known thm.]` when all hypotheses of a result are so attested, `[some known thm.]` when
   some are, and a separate table lists every hypothesis with its attestation.
+
+### 3.3 Generated aids: readings and assessments
+
+A model's back-translation of a claim's Lean statement and a model's comparison of paper text, Lean statement and
+back-translation are *generated* nodes (provenance `generated`) attached to the claim:
+
+* `reading`: `{path, sha256, produced_by}`, one per claim, from the file `[review] readings` (a template with `{claim}`).
+* `assessment`: `{claim, model, date, verdict, notes}` from `[assessment.<claim>]` tables; `verdict` is one of
+  `consistent`, `partial` (faithful where formalised, but the claim covers only part of what the paper states under its
+  label), `check`, `mismatch`, `unclear`; `notes` is a LaTeX fragment.
+* They are dependencies of the claim, so they are covered by the root (the record shows which aids existed), but they
+  are **excluded from the claim's spec hash**: regenerating a back-translation or an assessment never resets an
+  attestation. Neither is an attestation: they say nothing about who stands behind the claim.
 
 ## 4. Register
 
