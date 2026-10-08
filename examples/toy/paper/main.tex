@@ -1,9 +1,10 @@
 \documentclass{article}
+\usepackage[paper=toy]{ledgercheck}
 \newtheorem{lemma}{Lemma}
 \newtheorem{theorem}{Theorem}
 \begin{document}
 Some prose; a typo-fix here changes the root but no statement.
 \input{chapters/results}
-\input{ledger/toy-root}   % generated, excluded from the source hash
+\bibliographystyle{plain}
 \bibliography{refs}
 \end{document}

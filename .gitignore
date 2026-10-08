@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 examples/*/ledger/lock.json
+examples/*/paper/ledger/
+examples/*/ledger/attestations.toml
+examples/*/ledger/lock*.json

@@ -137,6 +137,45 @@ class Latex(Toy):
         self.assertIn("paper/chapters/more.tex", L.paper_nodes["toy"]["files"])
         self.assertEqual(L.unresolved["toy"], [])
 
+    def test_tex_files_do_not_change_the_root(self):
+        r0 = self.L().root_hash
+        self.assertEqual(lg.main(["-C", str(self.p), "-P", "toy", "tex"]), 0)
+        self.assertEqual(self.L().root_hash, r0)          # generated files are excluded from the hashed source
+        root = (self.p / "paper" / "ledger" / "ledger-toy-root.tex").read_text()
+        self.assertIn("\\def\\LedgerRoot{" + r0 + "}", root)
+        self.assertIn("\\def\\LedgerRootA{" + r0[:16] + "}", root)
+
+    def test_tex_status_counts_and_escaping(self):
+        self.attest("lem-succ"); self.attest("thm-twice")
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))     # both attestations become stale
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("\\def\\LedgerNStale{2}", st)
+        self.assertIn("\\def\\LedgerNNone{2}", st)
+        self.assertIn("stale}", st)
+        self.assertEqual(lg.tex_esc("a_b & 50% #1"), "a\\_b \\& 50\\% \\#1")
+
+    def test_table_follows_paper_order(self):
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertLess(st.index("lem:succ"), st.index("thm:twice"))
+        self.assertLess(st.index("thm:twice"), st.index("eq:f"))
+        self.assertLess(st.index("eq:f"), st.index("conj-general"))   # unlabelled claims last
+
+    def test_environment_globs_and_stale_dump(self):
+        cfg = self.p / "ledger" / "ledger.toml"
+        cfg.write_text(cfg.read_text() + '\n[environment]\nfiles = ["paper/**/*.tex"]\n')
+        L = self.L()
+        self.assertIn("paper/chapters/results.tex", L.payload[L.env]["content"]["files"])
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        self.assertFalse(any("/ledger/" in f for f in self.L().payload[L.env]["content"]["files"]))  # generated files are skipped
+        # a dump that records the environment hash is stale once an environment file changes
+        f = self.p / "ledger" / "lean.json"
+        d = json.loads(f.read_text()); d["env_hash"] = L.env_hash(); f.write_text(json.dumps(d))
+        self.assertEqual(self.L().errors, [])
+        self.tex("chapters/results.tex", lambda t: t + "% changed\n")
+        self.assertTrue(any("older than the sources" in e for e in self.L().errors))
+
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
 

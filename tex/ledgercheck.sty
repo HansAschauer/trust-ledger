@@ -1,0 +1,158 @@
+% ledgercheck.sty -- root hash and status table of the evidence ledger (trust-ledger).
+%
+%   \usepackage[paper=NAME]{ledgercheck}
+%
+% reads two files that `ledger.py -P NAME tex` writes into the ledger's generated directory
+% (found through TEXINPUTS):
+%   ledger-NAME-root.tex     the root hash and where it was sealed
+%   ledger-NAME-status.tex   per-result status and the counts for the banner
+% Both are excluded from the hashed source, so the root can be printed in the document
+% it covers. Nothing is typed by hand.
+%
+% Options
+%   paper=NAME   ledger scope (a paper name of ledger/ledger.toml). Without it the package
+%                does nothing and reads no file: the plain, submission-ready copy.
+%   auto=1|0     1 (default): the appendix "Evidence ledger" is added at the end of the
+%                document unless \ledgerappendix was called; 0: only on request.
+%
+% Commands
+%   \ledgerappendix    the appendix: status banner, root, explanation, how to check, table
+%   \ledgertitlenote   inside \title{...}: a footnote "Evidence ledger root ..." 
+%   \ledgerrootshort   the first 12 hex digits of the root (or "unsealed")
+%
+% Without a root file (a draft) the appendix says "UNSEALED DRAFT" instead of a hash, so a
+% draft cannot be mistaken for a sealed paper. Colour is always accompanied by a word.
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{ledgercheck}[2026/10/08 v0.1 evidence ledger root and status]
+
+\RequirePackage{kvoptions}
+\RequirePackage{xcolor}
+\RequirePackage{booktabs,array}
+\SetupKeyvalOptions{family=ledgercheck,prefix=ledgercheck@}
+\DeclareStringOption[]{paper}
+\DeclareStringOption[1]{auto}
+\ProcessKeyvalOptions*
+
+\newif\ifledgercheck@on
+\newif\ifledgercheck@sealed
+\newif\ifledgercheck@placed
+\newif\ifledgercheck@wastwocolumn
+% the flag is only reliable here, while the class options are in force (as in leancheck.sty)
+\if@twocolumn\ledgercheck@wastwocolumntrue\else\ledgercheck@wastwocolumnfalse\fi
+\ifx\ledgercheck@paper\@empty\ledgercheck@onfalse\else\ledgercheck@ontrue\fi
+
+\definecolor{ledgergreen}{rgb}{0.05,0.35,0.10}
+\definecolor{ledgeryellow}{rgb}{0.80,0.40,0.00}
+\definecolor{ledgerred}{rgb}{0.70,0.15,0.15}
+
+% ---- files ---------------------------------------------------------------
+\ifledgercheck@on
+  \AtBeginDocument{%
+    \IfFileExists{ledger-\ledgercheck@paper-root.tex}{%
+      \input{ledger-\ledgercheck@paper-root.tex}\ledgercheck@sealedtrue}{}%
+    \IfFileExists{ledger-\ledgercheck@paper-status.tex}{%
+      \input{ledger-\ledgercheck@paper-status.tex}}{}%
+  }
+\fi
+
+% ---- cells ---------------------------------------------------------------
+\newcommand{\LedgerNoAtt}{\textit{not yet attested}}
+% \LedgerAtt{level}{person}{date}{current|stale}
+\newcommand{\LedgerAtt}[4]{%
+  \csname ledgercheck@lvl@#1\endcsname\ #2 #3\csname ledgercheck@st@#4\endcsname}
+\newcommand{\ledgercheck@lvl@green}{{\color{ledgergreen}\textbf{GREEN}}}
+\newcommand{\ledgercheck@lvl@yellow}{{\color{ledgeryellow}\textbf{YELLOW}}}
+\newcommand{\ledgercheck@lvl@conjecture}{{\color{ledgerred}\textbf{CONJECTURE}}}
+\newcommand{\ledgercheck@st@current}{}
+\newcommand{\ledgercheck@st@stale}{\ {\color{ledgerred}\textbf{STALE}}}
+% Lean column: a neutral style, never the attestation colours
+\newcommand{\LedgerLeanCell}[1]{\csname ledgercheck@lean@#1\endcsname}
+\newcommand{\ledgercheck@lean@ok}{checked}
+\newcommand{\ledgercheck@lean@assumes}{checked, given hyp.}
+\newcommand{\ledgercheck@lean@axioms}{extra axioms}
+\newcommand{\ledgercheck@lean@sorry}{\textbf{contains sorry}}
+\newcommand{\ledgercheck@lean@missing}{\textbf{declaration missing}}
+\newcommand{\ledgercheck@lean@none}{---}
+% fixed cell widths keep the columns aligned from chunk to chunk; the attestation column is last, so
+% a long entry runs into the margin instead of into another column
+\newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
+\newcommand{\LedgerRow}[6]{%
+  \ledgercheck@mb{4.7cm}{#1} & \ledgercheck@mb{0.7cm}{#2} & \ledgercheck@mb{1.0cm}{#3} &
+  \ledgercheck@mb{3.0cm}{#4} & \ledgercheck@mb{0.7cm}{#5} & #6 \\}
+% the status table comes in chunks, each a plain tabular with its own header (neither longtable nor
+% supertabular nor p-columns work in the two-column quantumarticle class); pages break between chunks
+\newcommand{\LedgerTable}[1]{\par\noindent
+  \begin{tabular}{@{}llllll@{}}
+    \toprule Result & Evid. & Stmt. & Lean & Reg. & Attestation\\ \midrule
+    #1
+    \bottomrule
+  \end{tabular}\par\vskip 4pt plus 6pt}
+
+% ---- marker ---------------------------------------------------------------
+\newcommand{\ledgerrootshort}{%
+  \ifledgercheck@on\ifledgercheck@sealed\texttt{\LedgerRootShort}\else unsealed\fi\fi}
+\newcommand{\ledgertitlenote}{%
+  \ifledgercheck@on\thanks{Evidence ledger root \ledgerrootshort; see the section
+    ``Evidence ledger'' at the end of this paper.}\fi}
+
+% ---- appendix ---------------------------------------------------------------
+\newcommand{\ledgercheck@banner}{%
+  Of \LedgerNClaims{} results in the ledger:
+  \LedgerNGreen{} \ledgercheck@lvl@green, \LedgerNYellow{} \ledgercheck@lvl@yellow,
+  \LedgerNConj{} \mbox{\ledgercheck@lvl@conjecture} (a different kind of statement, not a worse grade);
+  \LedgerNStale{} with only \ledgercheck@st@stale{} attestations; \LedgerNNone{} not yet attested.
+  Lean status: \LedgerNAssumes{} rest on a hypothesis that is assumed, not proved; \LedgerNSorry{} contain
+  \texttt{sorry}.}
+
+\newcommand{\ledgerappendix}{%
+  \ledgercheck@placedtrue
+  \ifledgercheck@on
+  \ifledgercheck@wastwocolumn\clearpage\onecolumn\fi
+  \section*{Evidence ledger}
+  \ifledgercheck@sealed
+    \par\noindent\textbf{Status.}\ \ledgercheck@banner
+    \par\medskip\noindent\textbf{Root hash} (SHA-256, sealed \LedgerDate, ledger format \LedgerFormat):
+    \begin{center}\ttfamily\small
+      \LedgerRootA\\\LedgerRootB\\\LedgerRootC\\\LedgerRootD
+    \end{center}
+    \noindent The root is a Merkle hash over the exact kernel terms of the Lean declarations behind each
+    result, the statements of the results as typeset in this paper, the assumptions and cited
+    hypotheses, the assertions made by the authors, the attestations given by named persons, the
+    toolchain, and the source of this paper (hash \texttt{\LedgerSource}, excluding the files that show
+    the root and this table). Changing any of these changes the root. Supplementary data (ledger files,
+    Lean sources, verification tool): \LedgerSupplement.
+
+    \par\medskip\noindent\textbf{What it does and does not establish.}
+    The root shows that the data in the supplement is exactly the data this table was derived from.
+    It does not show that a formal statement means what the text means; that is what attestations are
+    for. An attestation records a person, a date and the checklist items that person did; it is bound
+    to the hash of the statement as typeset, and is shown as \ledgercheck@st@stale{} when the statement
+    has changed since. GREEN: the named author has personally done the checklist and stands behind the
+    result. YELLOW: convinced and the gap repairable, but would not yet defend it against experts.
+    CONJECTURE: a claim without proof. The Lean column is a machine check and is shown in a neutral
+    style.
+
+    \par\medskip\noindent\textbf{How to check.}
+    Recompute all hashes from the supplement and compare with the root above:
+    \texttt{\LedgerVerify}. To also re-derive the Lean part, rebuild the Lean dump from the Lean
+    sources in the supplement (see its README), then run the same command.
+
+    \par\medskip
+    {\footnotesize\LedgerChunks}
+    \noindent Evid.: E1 checked proof, E2 checked certificate, E3 exact computation, E4 numerical
+    evidence, E5 assertion. Stmt.: \texttt{tex} = taken from this paper's source by its label,
+    \texttt{manual} = written in the ledger. Lean: \emph{checked} = accepted by the Lean kernel with the
+    standard axioms only; \emph{given hyp.} = in addition a hypothesis is assumed, not proved;
+    --- = no Lean declaration. Reg.: number of open assumptions on which the result rests.
+    A result covering several labels appears once per label.
+  \else
+    \par\noindent{\color{ledgerred}\textbf{UNSEALED DRAFT.}} No ledger root file
+    (\texttt{ledger-\ledgercheck@paper-root.tex}) was found; run
+    \texttt{ledger.py -P \ledgercheck@paper\ tex}.
+  \fi
+  \ifledgercheck@wastwocolumn\clearpage\twocolumn\fi
+  \fi}
+\def\ledgercheck@zero{0}
+\AtEndDocument{\ifledgercheck@on\ifledgercheck@placed\else
+  \ifx\ledgercheck@auto\ledgercheck@zero\else\ledgerappendix\fi\fi\fi}

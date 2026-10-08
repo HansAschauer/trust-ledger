@@ -12,6 +12,7 @@ Status: early prototype. The method is described in a paper in preparation.
 * `docs/FORMAT.md`: the normative format (hashing, node kinds, register). Other implementations
   should reproduce the same hashes.
 * `lean/Dump.lean`: Lean 4 extractor; dumps the declaration graph, exact kernel terms and axioms.
+* `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
 * `examples/toy`: a hand-made project; `python3 ledger.py -C examples/toy status`.
 
 ## Use
@@ -37,6 +38,21 @@ Lean dump, from inside the Lake project after `lake build`:
 ```
 printf 'Toy.thm\n' | lake env lean --run Dump.lean module=Toy root=Toy assume=Toy.BanachProp > ledger/lean.json
 ```
+
+## In the paper
+
+`ledger.py -P NAME tex` writes `ledger-NAME-root.tex` and `ledger-NAME-status.tex` into the
+`[generated]` directory (excluded from the hashed source, so the root can sit in the document it
+covers). `\usepackage[paper=NAME]{ledgercheck}` then appends the appendix "Evidence ledger" (status
+banner, root, explanation, how to check, table) automatically. Without the generated files it prints
+"UNSEALED DRAFT"; without the `paper=` option it does nothing. To switch it on without touching the
+paper source (e.g. in a publish script), load it at the end of the preamble; a plain
+`\RequirePackage` before `\documentclass` collides with classes that define `\toprule`:
+
+    pdflatex '\AddToHook{begindocument/before}{\RequirePackage[paper=NAME]{ledgercheck}}\input{main}'
+
+The table uses plain `tabular`s in chunks because `longtable`, `supertabular` and `p`-columns fail in
+the two-column `quantumarticle` class.
 
 ## What it does and does not establish
 
