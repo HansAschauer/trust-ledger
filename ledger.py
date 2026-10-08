@@ -127,7 +127,14 @@ RESULT_ENVS = {"theorem", "proposition", "lemma", "corollary", "conjecture", "cl
 MATH_ENVS = {"equation", "align", "gather", "multline", "eqnarray", "flalign", "alignat"}
 INPUT_RE = re.compile(r"\\(?:input|include)\s*\{([^}]+)\}")
 BIB_RE = re.compile(r"\\bibliography\s*\{([^}]+)\}")
+USEPACKAGE_RE = re.compile(r"\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*\])?\s*\{([^}]+)\}")
+NEWTHEOREM_RE = re.compile(r"\\newtheorem\*?\{([A-Za-z]+)\}(?:\[[^\]]*\])?\{([^}]*)\}(?:\[[^\]]*\])?")
 ENV_RE = re.compile(r"\\(begin|end)\{([A-Za-z]+\*?)\}")
+# \newtheorem captions that classify an environment as a result (theorem-like) vs. a non-result
+# statement environment (definition, example, ...); an unrecognised caption defaults to a result,
+# so that an unusual name is reported as uncovered rather than silently skipped.
+RESULT_CAPTION_WORDS = {"theorem", "proposition", "lemma", "corollary", "conjecture", "claim", "fact", "observation"}
+NONRESULT_CAPTION_WORDS = {"definition", "example", "remark", "assumption", "problem", "criterion"}
 
 
 def strip_comments(text):
@@ -148,8 +155,11 @@ def strip_comments(text):
 
 
 def tex_sources(main, search, excluded):
-    """The .tex files reached from `main` by \\input/\\include (in order) and the .bib files named by
-    \\bibliography; files below an excluded directory are left out. Returns (paths, unresolved names)."""
+    """The .tex files reached from `main` by \\input/\\include (in order), the .bib files named by
+    \\bibliography, and the local .sty files named by \\usepackage/\\RequirePackage that exist next to
+    the paper (packages installed in the system TeX distribution are not local and are left alone: a
+    local .sty changes what a theorem statement means and so must be hashed, see docs/FORMAT.md).
+    Files below an excluded directory are left out. Returns (paths, unresolved names)."""
     def resolve(name, cur, exts):  # like TeX: relative to the directory LaTeX runs in, not to `cur`
         for base in [Path(main).resolve().parent, *search]:
             for e in exts:
@@ -167,7 +177,7 @@ def tex_sources(main, search, excluded):
         if cur in files or is_excluded(cur):
             continue
         files.append(cur)
-        if cur.suffix != ".tex":
+        if cur.suffix not in (".tex", ".sty"):
             continue
         text = strip_comments(cur.read_text(errors="replace"))
         for m in INPUT_RE.finditer(text):
@@ -183,7 +193,32 @@ def tex_sources(main, search, excluded):
                     unresolved.append(name.strip() + ".bib")
                 else:
                     todo.append(r)
+        for m in USEPACKAGE_RE.finditer(text):
+            for name in m.group(1).split(","):
+                name = name.strip()
+                r = name and resolve(name, cur, (".sty",))
+                if r is not None:  # silently skip: most packages are not local, which is normal
+                    todo.append(r)
     return files, sorted(set(unresolved))
+
+
+def discover_theorem_envs(files):
+    """\\newtheorem environments declared in `files` (any suffix), beyond the built-in STATEMENT_ENVS /
+    RESULT_ENVS: (stmt_envs, result_envs, kind_words), to be unioned with the built-in sets per paper."""
+    stmt, result, words = set(), set(), {}
+    for f in files:
+        text = strip_comments(f.read_text(errors="replace"))
+        for m in NEWTHEOREM_RE.finditer(text):
+            name, caption = m.group(1), m.group(2).strip()
+            if name in STATEMENT_ENVS:
+                continue
+            stmt.add(name)
+            cwords = re.findall(r"[A-Za-z]+", caption.lower())
+            if not any(w in NONRESULT_CAPTION_WORDS for w in cwords):  # unknown caption: treat as a result
+                result.add(name)
+            if caption:
+                words[name] = caption
+    return stmt, result, words
 
 
 def flatten_tex(main, search):
@@ -209,13 +244,14 @@ def flatten_tex(main, search):
     return expand(main, {main})
 
 
-def find_environments(text):
-    """Statement and display-math environments of `text`: (name, body_start, body_end)."""
+def find_environments(text, extra_stmt=frozenset()):
+    """Statement and display-math environments of `text`: (name, body_start, body_end). `extra_stmt`
+    adds environments declared by \\newtheorem in this paper, beyond the built-in STATEMENT_ENVS."""
     stack, envs = [], []
     for m in ENV_RE.finditer(text):
         kind, name = m.group(1), m.group(2)
         base = name.rstrip("*")
-        if base not in STATEMENT_ENVS and base not in MATH_ENVS:
+        if base not in STATEMENT_ENVS and base not in extra_stmt and base not in MATH_ENVS:
             continue
         if kind == "begin":
             stack.append((name, m.end()))
@@ -228,15 +264,16 @@ def find_environments(text):
     return envs
 
 
-def result_labels(text, envs):
-    """Labels whose innermost environment is a theorem-like result (not a definition, remark or equation)."""
+def result_labels(text, envs, extra_result=frozenset()):
+    """Labels whose innermost environment is a theorem-like result (not a definition, remark or equation).
+    `extra_result` adds environments declared by \\newtheorem in this paper."""
     out = []
     for m in re.finditer(r"\\label\{([^}]+)\}", text):
         inner = None
         for e in envs:
             if e[1] <= m.start() < e[2] and (inner is None or e[1] > inner[1]):
                 inner = e
-        if inner and inner[0].rstrip("*") in RESULT_ENVS:
+        if inner and (inner[0].rstrip("*") in RESULT_ENVS or inner[0].rstrip("*") in extra_result):
             out.append(m.group(1))
     return out
 
@@ -247,9 +284,10 @@ KIND_WORDS = {"theorem": "Theorem", "proposition": "Proposition", "lemma": "Lemm
               "example": "Example"}
 
 
-def reference_tex(label, parsed):
+def reference_tex(label, parsed, extra_words=None):
     """How a reader cites the labelled item: 'Lemma~\\ref{l}' or 'Equation~(\\ref{l})'. The type word comes from the
-    environment in the source, not from the counter (theorem-like environments often share one)."""
+    environment in the source, not from the counter (theorem-like environments often share one). `extra_words`
+    supplies the \\newtheorem caption for environments beyond the built-in KIND_WORDS."""
     pat = re.compile(r"\\label\{" + re.escape(label) + r"\}")
     for text, envs in parsed:
         m = pat.search(text)
@@ -264,7 +302,8 @@ def reference_tex(label, parsed):
         base = inner[0].rstrip("*")
         if base in MATH_ENVS:
             return f"Equation~(\\ref{{{label}}})"
-        return f"{KIND_WORDS.get(base, base.capitalize())}~\\ref{{{label}}}"
+        word = KIND_WORDS.get(base) or (extra_words or {}).get(base) or base.capitalize()
+        return f"{word}~\\ref{{{label}}}"
     return None
 
 
@@ -361,6 +400,7 @@ class Ledger:
         """Paper-source nodes and the parsed statement environments of each paper."""
         self.paper_nodes, self.parsed, self.unresolved, self.flat = {}, {}, {}, {}
         papers = self.cfg.get("paper", {})
+        self.extra_result, self.kind_words = {}, {}
         excluded = [(self.root / d).resolve() for d in self.cfg.get("generated", {}).get("dirs", [])]
         for name, pc in papers.items():
             if self.paper is not None and name != self.paper:
@@ -376,7 +416,10 @@ class Ledger:
             self.paper_nodes[name] = dict(main=pc["main"], files={rel(f): sha_file(f) for f in files},
                                           unresolved=unresolved)
             self.flat[name] = flatten_tex(main, search)
-            self.parsed[name] = [(t, find_environments(t)) for t in
+            extra_stmt, extra_result, words = discover_theorem_envs(files)
+            self.extra_result[name] = extra_result
+            self.kind_words.update(words)
+            self.parsed[name] = [(t, find_environments(t, extra_stmt)) for t in
                                  (strip_comments(f.read_text(errors="replace")) for f in files if f.suffix == ".tex")]
 
     def uncovered(self):
@@ -386,7 +429,8 @@ class Ledger:
         out = []
         for name, parsed in self.parsed.items():
             if self.paper is None or name == self.paper:
-                out += [lab for text, envs in parsed for lab in result_labels(text, envs) if lab not in claimed]
+                out += [lab for text, envs in parsed for lab in result_labels(text, envs, self.extra_result.get(name, set()))
+                        if lab not in claimed]
         return sorted(set(out))
 
     def hypothesis_statement(self, name, meta):
@@ -834,7 +878,7 @@ def cmd_tex(L, args):
         assumes += ls == "assumes"; sorry += ls == "sorry"
     def reference(c, lab):
         parsed = L.parsed.get(c.get("paper")) or [x for v in L.parsed.values() for x in v]
-        return reference_tex(lab, parsed)
+        return reference_tex(lab, parsed, L.kind_words)
     def hyp_pos(h):
         lab = L.hypotheses.get(h, {}).get("label")
         m = re.search(r"\\label\{" + re.escape(lab) + r"\}", next(iter(L.flat.values()), "")) if lab else None
@@ -871,7 +915,7 @@ def cmd_tex(L, args):
     for h in sorted(L.scope_hyps, key=lambda h: hkey[h]):
         meta = L.hypotheses.get(h, {})
         lab = meta.get("label")
-        ref = (reference_tex(lab, [x for v in L.parsed.values() for x in v]) if lab else None) or "---"
+        ref = (reference_tex(lab, [x for v in L.parsed.values() for x in v], L.kind_words) if lab else None) or "---"
         hst = L.hypothesis_state(h)
         att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{unsigned}}"
@@ -884,7 +928,7 @@ def cmd_tex(L, args):
     def unc_pos(lab):
         m = re.search(r"\\label\{" + re.escape(lab) + r"\}", flat)
         return m.start() if m else 1 << 60
-    uncovered_refs = [f"{reference_tex(lab, allparsed) or ''} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}".strip()
+    uncovered_refs = [f"{reference_tex(lab, allparsed, L.kind_words) or ''} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}".strip()
                       for lab in sorted(L.uncovered(), key=unc_pos)]
     cl = [f"% generated by ledger.py -P {L.paper} tex; do not edit. Excluded from the hashed source.",
           f"\\def\\LedgerNClaims{{{len(names)}}}", f"\\def\\LedgerNAtt{{{len(counted)}}}",

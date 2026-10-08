@@ -70,7 +70,8 @@ error, not an empty proof.
 A `paper-source` node (`computed`) has content `{main, files: {path: sha256}, unresolved: [...]}`.
 `files` is `main` plus every file reached by `\input`/`\include` (resolved like TeX: relative to the
 directory of `main`, then the configured `texinputs`; `.tex` appended when missing) and every `.bib`
-named by `\bibliography`, in raw bytes, **minus everything below a `generated` directory**. Generated
+named by `\bibliography`, and every local `.sty` named by `\usepackage`/`\RequirePackage` (resolved the same
+way, searched recursively; packages not found locally belong to the TeX distribution and are not listed), in raw bytes, **minus everything below a `generated` directory**. Generated
 files (the root file, the status table) are derived from the ledger, so hashing them would be circular.
 Names that cannot be resolved are listed in `unresolved`, not silently ignored.
 
@@ -158,8 +159,9 @@ result is a node of kind `hypothesis` (asserted) with content `{name, label, tex
 
 ## 5. Root and lock file
 
-`root = H("root", [[n.id, full(n)] for all nodes of kind claim, attestation, environment or paper-source, sorted by id])`.
-Citations, assertions, files and Lean declarations are covered through the claims that depend on them.
+`root = H("root", [[n.id, full(n)] for all nodes of kind claim, attestation, environment, paper-source or
+hypothesis, sorted by id])`. Citations, assertions, files and Lean declarations are covered through the
+claims that depend on them.
 
 `ledger/lock.json` stores all computed hashes and the root. `verify` recomputes everything from
 the artefacts and fails on any difference. The root is what gets published (e.g. in the arXiv
