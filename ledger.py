@@ -957,6 +957,41 @@ class Ledger:
         """True if someone has a current green attestation that hypothesis h is a known theorem."""
         return any(lvl == "green" and cur for _, lvl, _, cur in self.hypothesis_state(h))
 
+    def split_labels(self):
+        """Paper labels carried by more than one claim in scope, {label: [claims]}. Every paper result should be
+        stated by one Lean theorem on one claim (a conjunction if the result has several parts); the theorems for
+        the parts are then steps of its proof (see used_in) and need no attestation of their own for that label."""
+        m = {}
+        for n, c in self.claims.items():
+            for lab in (c.get("labels") or ([c["label"]] if c.get("label") else [])):
+                m.setdefault(lab, []).append(n)
+        return {lab: sorted(ns) for lab, ns in m.items() if len(ns) > 1}
+
+    def lean_closure(self, names):
+        """Declarations the given ones rest on (statements and proofs), transitively, within the dump."""
+        seen, todo = set(), list(names)
+        while todo:
+            x = todo.pop()
+            if x in seen or x not in self.decls:
+                continue
+            seen.add(x)
+            todo += self.decls[x].get("proof_deps", []) + self.decls[x].get("stmt_deps", [])
+        return seen
+
+    def used_in(self, n):
+        """Claims whose Lean declarations use one of claim n's in their proofs: {claim: [declarations]}.
+        Claim n is then a step of those claims."""
+        own = set(self.claims[n].get("lean", []))
+        out = {}
+        for m, c in self.claims.items():
+            theirs = set(c.get("lean", []))
+            if m == n or not theirs:
+                continue
+            hit = sorted(own & (self.lean_closure(theirs) - theirs))
+            if hit:
+                out[m] = hit
+        return out
+
     def claim_hypotheses(self, n):
         return sorted({e[4:] for e in self.register.get(n, []) if e.startswith("hyp:") and not e.startswith("hyp:cited:")})
 
@@ -1020,6 +1055,9 @@ def cmd_status(L, args):
             if not m or m.group(1) != L.root_hash:
                 print(f"note: {rf.name} shows an older root: run `ledger.py -P {L.paper} tex` before building the paper",
                       file=sys.stderr)
+    for lab, ns in L.split_labels().items():
+        print(f"warning: {lab} is carried by {len(ns)} claims ({', '.join(ns)}); state the whole result as one Lean "
+              "theorem and keep the label on that claim only", file=sys.stderr)
     unc = L.uncovered()
     if unc:
         print(f"warning: {len(unc)} labelled results are not in the ledger: {', '.join(unc[:12])}" + (" ..." if len(unc) > 12 else ""),
@@ -1052,6 +1090,11 @@ def cmd_why(L, args):
     for i in sorted(seen):
         print(f"    {L.payload[i]['provenance']:9} {i}")
     print("  register:", ", ".join(L.register[n]) or "(empty)")
+    for m, ds in sorted(L.used_in(n).items()):
+        print(f"  step of {m}: its proofs use {', '.join(ds)}")
+    for lab, ns in L.split_labels().items():
+        if n in ns:
+            print(f"  shares the label {lab} with {', '.join(x for x in ns if x != n)}")
     for p, lvl, date, cur in L.attestation_state(n):
         print(f"  attested {lvl} by {p} on {date}: {'current' if cur else 'STALE (statement changed since)'}")
     return 0
@@ -1062,7 +1105,8 @@ TEX_SPECIAL = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#
 
 
 def tex_esc(x):
-    return "".join(TEX_SPECIAL.get(ch, ch) for ch in str(x))
+    """Plain text (claim texts, names) as text-mode TeX; Unicode math symbols as in Lean blocks."""
+    return "".join(uni_tex(ch) for ch in str(x))
 
 
 def cmd_tex(L, args):
@@ -1169,6 +1213,10 @@ def cmd_tex(L, args):
           "\\def\\LedgerHyps{%"] + hrows + ["}",
           f"\\def\\LedgerNSignedAtt{{{nsigned}}}", f"\\def\\LedgerNKeys{{{len(keyrows)}}}",
           f"\\def\\LedgerNUncovered{{{len(L.uncovered())}}}",
+          f"\\def\\LedgerNSplit{{{len(L.split_labels())}}}",
+          "\\def\\LedgerSplit{%s}" % "; ".join(
+              f"{reference_tex(lab, allparsed, L.kind_words) or tex_esc(lab)} ({', '.join(tex_esc(x) for x in ns)})"
+              for lab, ns in sorted(L.split_labels().items(), key=lambda t: unc_pos(t[0]))),
           "\\def\\LedgerUncovered{%s}" % ", ".join(uncovered_refs),
           "\\def\\LedgerKeys{%"] + keyrows + ["}"]
     cl += [f"\\def\\LedgerN{k}{{{v}}}" for k, v in (("Green", cnt["green"]), ("Yellow", cnt["yellow"]),
@@ -1263,6 +1311,12 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
                    f"\\textbf{{Evidence}} {tex_esc(c.get('evidence', 'E5'))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
                    f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
+        notes = [f"the label \\texttt{{{tex_esc(lab)}}} is also on {', '.join(chr(92) + 'texttt{' + tex_esc(x) + '}' for x in ns if x != n)}"
+                 for lab, ns in L.split_labels().items() if n in ns]
+        notes += [f"its Lean statements are used in the proofs of \\texttt{{{tex_esc(m)}}} ({', '.join(tex_esc(d.split('.')[-1]) for d in ds)}), "
+                  "so for a label of that claim it is a step" for m, ds in sorted(L.used_in(n).items())]
+        if notes:
+            out.append("{\\small \\textbf{Relations:} " + "; ".join(notes) + ".}\\par\\medskip")
         out.append("{\\large\\bfseries In the paper}\\par\\smallskip")
         seen = set()
         if labels:

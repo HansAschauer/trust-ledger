@@ -386,6 +386,20 @@ class Latex(Toy):
         self.assertIn("Lemma 1", text)                                          # the paper's number, from its .aux
         self.assertNotIn("??", text)                                            # every reference resolved
 
+    def test_split_labels_and_steps(self):
+        L = self.L()
+        self.assertEqual(L.split_labels(), {})
+        self.assertEqual(L.used_in("lem-succ"), {"thm-twice": ["Toy.lem"]})   # thm's proof uses the lemma
+        self.assertEqual(L.used_in("thm-twice"), {})
+        f = self.p / "ledger" / "claims.toml"                                  # a second claim on lem:succ
+        f.write_text(f.read_text() + '\n[claim.lem-succ-again]\nlabels = ["lem:succ"]\npaper = "toy"\nevidence = "E5"\n')
+        L = self.L()
+        self.assertEqual(L.split_labels(), {"lem:succ": ["lem-succ", "lem-succ-again"]})
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        self.assertIn("\\def\\LedgerNSplit{1}", st)
+        self.assertIn("Lemma~\\ref{lem:succ} (lem-succ, lem-succ-again)", st)
+
     def test_strip_comments(self):
         self.assertEqual(lg.strip_comments("a % c\nb \\% d\nc \\\\% e"), "a \nb \\% d\nc \\\\")
 
@@ -491,6 +505,9 @@ class Merkle(unittest.TestCase):
     def test_floats_rejected(self):
         with self.assertRaises(ValueError):
             lg.canon({"x": 1.5})
+
+    def test_tex_esc_unicode(self):
+        self.assertEqual(lg.tex_esc("A ⊆ S_1 & ρ"), r"A \ensuremath{\subseteq} S\_1 \& \ensuremath{\rho}")
 
 
 if __name__ == "__main__":

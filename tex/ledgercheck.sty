@@ -176,6 +176,10 @@
         \LedgerHyps
         \bottomrule\end{tabular}}\par\medskip
     \fi\fi
+    \ifdefined\LedgerNSplit\ifnum\LedgerNSplit>0
+      \par\medskip\noindent\textbf{Split results.} \LedgerNSplit{} results of this paper are stated by more than one
+      ledger entry, each covering a part; such a result is attested only when every part is: \LedgerSplit.
+    \fi\fi
     \ifnum\LedgerNUncovered>0
       \par\medskip\noindent\textbf{Not in the ledger.} \LedgerNUncovered{} labelled theorem-like results of this
       paper have no entry in the ledger, so nothing is claimed about them here: \LedgerUncovered.

@@ -108,6 +108,13 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
   (declared type E1..E5), `lean` (declaration names), `proverif` (`"path/to/file.pv#query text"`
   references into the ProVerif dump), `files` (paths), `uses` (other claims), `cites` (citation names).
+* **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
+  declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
+  that is the conjunction of the parts and lists that theorem. A claim for a lemma used on the way may
+  exist, but it carries no label of the result it serves. `status` warns about any label carried by more than one claim
+  (`split`). `why` and the review packet list the *steps*: claim A is a step of claim B when a declaration
+  of A occurs in the transitive `stmt_deps` ∪ `proof_deps` closure of B's declarations. Steps are reported,
+  not hashed: they are derived from the Lean dump.
 * `[citation.<name>]`: `key`, `statement` (as used here), `source` (theorem number / page).
 * `[assertion.<name>]`: `claim`, `text`; evidence type E5 by definition.
 * `[[attestation]]`: `claim`, `person`, `date`, `level` (`green`, `yellow`, `conjecture`), `reason`
