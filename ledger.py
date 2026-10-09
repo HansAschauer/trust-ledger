@@ -899,6 +899,7 @@ class Ledger:
             if not c.get("lean") and not c.get("files") and not c.get("proverif"):
                 r.add("evidence:none")
             own[n] = r
+        self.own_register = own
         reg = {n: set(r) for n, r in own.items()}
         changed = True
         while changed:  # least fixed point; terminates since sets only grow
@@ -977,6 +978,19 @@ class Ledger:
             seen.add(x)
             todo += self.decls[x].get("proof_deps", []) + self.decls[x].get("stmt_deps", [])
         return seen
+
+    def register_origin(self, n, item):
+        """The claim, n itself or one reached through `uses`, whose own register contributes `item` to Reg(n)."""
+        todo, seen = [n], set()
+        while todo:
+            m = todo.pop(0)
+            if m in seen or m not in self.claims:
+                continue
+            seen.add(m)
+            if item in self.own_register.get(m, ()):
+                return m
+            todo += self.claims[m].get("uses", [])
+        return None
 
     def used_in(self, n):
         """Claims whose Lean declarations use one of claim n's in their proofs: {claim: [declarations]}.
@@ -1274,6 +1288,63 @@ def review_statement_tex(L, lab, parsed, seen):
     return f"\\noindent\\textbf{{{head}.}}~{{{style}{body}\\par}}"
 
 
+def review_relations_tex(L, n, names):
+    """Relations of claim n to other claims, and a framed list of everything n rests on beyond kernel-checked Lean:
+    its register (assertions, hypotheses, cited results, axioms, sorry, models; inherited ones with the claim they
+    come from) and other evidence files."""
+    tt = lambda x: "\\texttt{" + tex_esc(x) + "}"
+    c = L.claims[n]
+    rel = []
+    for lab, ns in L.split_labels().items():
+        if n in ns:
+            rel.append(f"\\textbf{{shares the label}} {tt(lab)} with " + ", ".join(tt(x) for x in ns if x != n))
+    steps = sorted(L.used_in(n).items())
+    if steps:
+        rel.append("\\textbf{step of} " + ", ".join(f"{tt(m)} ({', '.join(tex_esc(d.split('.')[-1]) for d in ds)})"
+                                                  for m, ds in steps))
+    if c.get("uses"):
+        rel.append("\\textbf{uses} " + ", ".join(tt(u) for u in c["uses"]))
+    users = [m for m in L.claims if n in L.claims[m].get("uses", [])]
+    if users:
+        rel.append("\\textbf{used by} " + ", ".join(tt(m) for m in users))
+    out = ["{\\small \\textbf{Relations:} " + "; ".join(rel) + ".}\\par\\medskip"] if rel else []
+    items = []
+    for r in L.register.get(n, []):
+        kind, _, name = r.partition(":")
+        origin = L.register_origin(n, r)
+        via = "" if origin in (None, n) else f" \\emph{{(from {tt(origin)}, through \\texttt{{uses}})}}"
+        if kind == "assertion":
+            a = L.assertions.get(name, {})
+            items.append(f"\\textbf{{Assertion}} {tt(name)}{via}: {tex_esc(a.get('text', ''))}")
+        elif kind == "hyp" and name.startswith("cited:"):
+            items.append(f"\\textbf{{Cited result}} {tt(name[6:])}{via}, taken from the literature")
+        elif kind == "hyp":
+            known = "attested as a known theorem" if L.known_theorem(name) else "not attested as a known theorem"
+            items.append(f"\\textbf{{Hypothesis}} {tt(name)}{via} of the Lean statement, {known}")
+        elif kind == "axiom":
+            items.append(f"\\textbf{{Axiom}} {tt(name)}{via}")
+        elif kind == "sorry":
+            items.append(f"\\textbf{{Unproved (sorry)}} {tt(name)}{via}")
+        elif kind == "model":
+            items.append(f"\\textbf{{ProVerif model}} {tt(name)}{via}: faithfulness to the protocol is not checked")
+        elif kind == "evidence":
+            items.append(f"\\textbf{{No checked evidence}}{via}: no Lean, ProVerif or files")
+        else:
+            items.append(tt(r) + via)
+    files = c.get("files", [])
+    if items or files:
+        body = ""
+        if items:
+            body += ("\\textbf{Rests on, beyond kernel-checked Lean:}\\begin{itemize}\\itemsep0pt\\topsep2pt"
+                     + "".join("\\item " + x for x in items) + "\\end{itemize}")
+        if files:
+            body += "\\textbf{Other evidence (not checked by the ledger):} " + ", ".join(tt(f) for f in files) + "."
+        out.append("\\noindent\\fbox{\\parbox{\\dimexpr\\linewidth-2\\fboxsep-2\\fboxrule\\relax}{\\small " + body + "}}\\par\\medskip")
+    elif c.get("lean"):
+        out.append("{\\small \\textbf{Rests on:} kernel-checked Lean only, standard axioms.}\\par\\medskip")
+    return out
+
+
 def review_body(L, only=None, with_lean=True):
     """LaTeX body of the review packet of the selected paper: for each claim the paper's statement, the model's
     back-translation of the Lean statement, a model's short assessment and the Lean text."""
@@ -1291,7 +1362,10 @@ def review_body(L, only=None, with_lean=True):
 paper, with the paper's numbers and the page where it stands (page numbers refer to the plain build of the paper made for this packet). \emph{Back-translation}
 is what a model reads out of the Lean statement alone; \emph{Assessment} is a model's short comparison of the three. Both are
 generated aids and can share a model's blind spots; neither is an attestation. \emph{Lean statement} is the source the back-translation
-was made from. To attest after reading: \texttt{ledger.py -P %s attest CLAIM --person NAME --level yellow --reason spec}.\par
+was made from. Under the header, \emph{Relations} names the claims whose Lean proofs use this one (\emph{step of}) and the
+declared \texttt{uses} links; a framed box lists everything the claim rests on beyond kernel-checked Lean (assertions, hypotheses,
+cited results, also those inherited through \texttt{uses}) and other evidence such as scripts. Attesting a claim covers its statement,
+not the items in that box. To attest after reading: \texttt{ledger.py -P %s attest CLAIM --person NAME --level yellow --reason spec}.\par
 \medskip\textbf{Verdicts.} CONSISTENT: no difference found between paper, back-translation and Lean text. PARTIAL: faithful where it formalises, but this claim covers only part of what the paper states under its label (the rest is in a sibling claim or not formalised; see the notes). CHECK: something specific to look at, see the notes.
 MISMATCH: a difference that probably needs a fix in the text or in the formalisation. UNCLEAR: could not be decided.\par
 \medskip\textbf{Claims} (page):\par\smallskip""" % tex_esc(L.paper))
@@ -1311,12 +1385,7 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
                    f"\\textbf{{Evidence}} {tex_esc(c.get('evidence', 'E5'))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
                    f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
-        notes = [f"the label \\texttt{{{tex_esc(lab)}}} is also on {', '.join(chr(92) + 'texttt{' + tex_esc(x) + '}' for x in ns if x != n)}"
-                 for lab, ns in L.split_labels().items() if n in ns]
-        notes += [f"its Lean statements are used in the proofs of \\texttt{{{tex_esc(m)}}} ({', '.join(tex_esc(d.split('.')[-1]) for d in ds)}), "
-                  "so for a label of that claim it is a step" for m, ds in sorted(L.used_in(n).items())]
-        if notes:
-            out.append("{\\small \\textbf{Relations:} " + "; ".join(notes) + ".}\\par\\medskip")
+        out += review_relations_tex(L, n, names)
         out.append("{\\large\\bfseries In the paper}\\par\\smallskip")
         seen = set()
         if labels:

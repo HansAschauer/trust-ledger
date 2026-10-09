@@ -386,6 +386,18 @@ class Latex(Toy):
         self.assertIn("Lemma 1", text)                                          # the paper's number, from its .aux
         self.assertNotIn("??", text)                                            # every reference resolved
 
+    def test_review_relations_and_rests_on(self):
+        L = self.L()
+        self.assertEqual(L.register_origin("conj-general", "hyp:cited:banach"), "thm-twice")
+        tex = "".join(lg.review_relations_tex(L, "conj-general", list(L.claims)))
+        self.assertIn("\\textbf{uses} \\texttt{thm-twice}", tex)
+        self.assertIn("\\textbf{Assertion} \\texttt{conj-general-hint}: Checked numerically", tex)
+        self.assertIn("\\textbf{Cited result} \\texttt{banach} \\emph{(from \\texttt{thm-twice}", tex)
+        tex = "".join(lg.review_relations_tex(L, "lem-succ", list(L.claims)))
+        self.assertIn("\\textbf{step of} \\texttt{thm-twice} (lem)", tex)
+        self.assertIn("\\textbf{used by} \\texttt{thm-twice}", tex)
+        self.assertIn("kernel-checked Lean only", tex)
+
     def test_split_labels_and_steps(self):
         L = self.L()
         self.assertEqual(L.split_labels(), {})
