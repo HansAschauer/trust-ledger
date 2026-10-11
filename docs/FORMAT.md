@@ -100,6 +100,7 @@ shape. The core needs no knowledge of the tool; it hashes what the dump says.
 
 ```json
 {"adapter": "lean", "version": "0.2.0", "environment": {...}, "words": ["ok", ...],
+ "title": "Lean", "labels": {"<word>": "<text>"}, "legend": "...",
  "nodes": {"<reference>": {"kind": "...", "content": {...}, "deps": ["<reference>", ...],
                            "spec": {...}, "spec_deps": ["<reference>", ...],
                            "status": "ok|conditional|open|failed", "word": "...",
@@ -124,7 +125,9 @@ shape. The core needs no knowledge of the tool; it hashes what the dump says.
   (a subset of `deps`, each with a `spec`). A claim's spec hash uses `spec(n)` for it; without `spec`, it
   uses `full(n)`, so then every change resets the attestations. Whether a change resets attestations is
   thus the adapter's decision, made once per node kind.
-* `status`, `word`, `register`, `result`, `info` and `words` are not hashed. A claim shows, per adapter,
+* `title` (column heading), `labels` (word to the text shown in the status table) and `legend` (one
+  paragraph explaining the texts) are for display; the core and `ledgercheck.sty` know no tool.
+* `status`, `word`, `register`, `result`, `info`, `words`, `title`, `labels` and `legend` are not hashed. A claim shows, per adapter,
   the `word` (else the `status`) of its worst reference: `failed` > `open` > `conditional` > `ok`, ties
   broken by the dump's `words` (best to worst); `missing` if a reference is not in the dump.
   `register` items enter the claim's register (section 4); an item `hyp:<name>` makes `<name>` a
@@ -158,7 +161,7 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 `examples/toy/ledger/`). Computed nodes are never written by hand; they are recomputed.
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
-  (declared type E1..E5), `files` (paths), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
+  (declared evidence type, section 3.5; default: the weakest), `files` (paths), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
   for each configured adapter a list of references under its name (section 2.6). Any other field is an error.
 * **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
   declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
@@ -267,6 +270,17 @@ path may name a directory, whose digest is `H("tree", {relative path: sha256})` 
 The ledger records the chain; it does not re-run steps. Whether the outputs are what the commands produce
 from the inputs is checked by re-running them (planned: `reproduce`).
 
+### 3.5 Evidence types and checklists (in `ledger.toml`)
+
+* `[[evidence]]` tables, each with `id` and `name`, in order from strongest to weakest, define the evidence
+  types a claim may declare. Without them the default is E1 checked proof, E2 checked certificate, E3 exact
+  computation, E4 numerical evidence, E5 assertion. A field defines its own (e.g. *confirmatory
+  (preregistered)*, *exploratory*). `status` warns when a claim declares a stronger type than a claim it
+  `uses`: a result is no stronger than what it rests on. The declared type is part of the claim node.
+* `[checklist.<id>]` tables with `text` and `applies` (`claim`, default; `hypothesis`; `both`) define what an
+  attesting person can tick. Once any is defined, an attestation may list only defined items that apply to its
+  target (`attest` refuses others, and existing ones are errors); the appendix lists the items.
+
 ## 4. Register
 
 `own(claim)` is computed from artefacts:
@@ -301,7 +315,8 @@ difference. The root is what gets published (e.g. in the arXiv comment field); s
   (`stated` instead of `lean`). Status `conditional`; wildcards expand to `result` nodes.
   `[lean]` and `[proverif]` in `ledger.toml` became `[adapter.lean]` and `[adapter.proverif]`.
   Added (no effect on ledgers that do not use them): sources, steps, checks and commitments (section 3.4),
-  directory digests for files.
+  directory digests for files, evidence types and checklists in `ledger.toml` (section 3.5), display fields of
+  adapter dumps.
 * **0.1.0**: first versioned format (lock files with `format` `0` were written by its unversioned
   predecessor, with the same hashing).
 

@@ -17,6 +17,8 @@ One node per declaration (kind `lean-decl`), with reference = declaration name:
   result     true for theorems (a claim's `Name*` expands to these)
   info       {module, line} (not hashed)
 
+The dump also carries the column title, display texts and legend for the status table (not hashed).
+
 The environment (toolchain) is reported once for the whole dump.
 """
 import json, sys
@@ -24,6 +26,12 @@ import json, sys
 VERSION = "0.2.0"
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 WORDS = ["ok", "assumes", "axioms", "sorry"]  # best to worst, breaks ties between nodes of equal status
+DISPLAY = dict(  # how the status table shows it (not hashed)
+    title="Lean",
+    labels={"ok": "checked", "assumes": "checked, given", "axioms": "extra axioms", "sorry": "contains sorry"},
+    legend="checked = accepted by the Lean kernel with the standard axioms only; checked, given [Hk] = in addition "
+           "the hypothesis Hk of the Hypotheses table is assumed, not proved; extra axioms = the proof uses an axiom "
+           "beyond the standard ones; contains sorry = the proof is unfinished.")
 
 
 def node(name, d, names):
@@ -49,7 +57,7 @@ def node(name, d, names):
 def convert(dump):
     decls = dump["decls"]
     out = dict(adapter="lean", version=VERSION, environment=dict(toolchain=dump.get("toolchain", "")), words=WORDS,
-               nodes={n: node(n, d, decls) for n, d in sorted(decls.items())})
+               **DISPLAY, nodes={n: node(n, d, decls) for n, d in sorted(decls.items())})
     if "env_hash" in dump:  # written by `ledger.py extract`; lets it notice that the sources moved on
         out["env_hash"] = dump["env_hash"]
     return out

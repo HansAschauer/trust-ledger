@@ -24,7 +24,7 @@
 % draft cannot be mistaken for a sealed paper. Colour is always accompanied by a word.
 
 \NeedsTeXFormat{LaTeX2e}
-\ProvidesPackage{ledgercheck}[2026/10/08 v0.1 evidence ledger root and status]
+\ProvidesPackage{ledgercheck}[2026/10/11 v0.2 evidence ledger root and status]
 
 \RequirePackage{kvoptions}
 \RequirePackage{xcolor}
@@ -78,38 +78,37 @@
 \newcommand{\ledgercheck@lvl@conjecture}{{\color{ledgerred}\textbf{CONJECTURE}}}
 \newcommand{\ledgercheck@st@current}{}
 \newcommand{\ledgercheck@st@stale}{\ {\color{ledgerred}\textbf{STALE}}}
-% Lean column: a neutral style, never the attestation colours
-\newcommand{\LedgerLeanCell}[1]{\csname ledgercheck@lean@#1\endcsname}
-\newcommand{\ledgercheck@lean@ok}{checked}
-\newcommand{\ledgercheck@lean@assumes}{checked, given hyp.}
-% a result proved given hypotheses: [H1, H2] are keys into the Hypotheses table
-\newcommand{\LedgerLeanGiven}[1]{checked, given [#1]}
+% a result shown given hypotheses: [H1, H2] in a tool cell are keys into the Hypotheses table
 \newcommand{\LedgerHypRow}[5]{#1 & \ledgercheck@mb{2.0cm}{#2} & \ledgercheck@mb{3.6cm}{#3} & \ledgercheck@mb{4.6cm}{#4} & #5 \\}
-\newcommand{\ledgercheck@lean@axioms}{extra axioms}
-\newcommand{\ledgercheck@lean@sorry}{\textbf{contains sorry}}
-\newcommand{\ledgercheck@lean@missing}{\textbf{declaration missing}}
-\newcommand{\ledgercheck@lean@none}{---}
-% ProVerif column: same neutral style; a failed query is a specification finding, shown plainly, not as an alarm
-\newcommand{\LedgerProverifCell}[1]{\csname ledgercheck@proverif@#1\endcsname}
-\newcommand{\ledgercheck@proverif@ok}{query true}
-\newcommand{\ledgercheck@proverif@false}{\textbf{query false}}
-\newcommand{\ledgercheck@proverif@unproved}{cannot be proved}
-\newcommand{\ledgercheck@proverif@missing}{\textbf{query missing}}
-\newcommand{\ledgercheck@proverif@none}{---}
+% tool columns (one per tool the ledger uses, titles and texts from the tools' adapters): a neutral style,
+% never the attestation colours. \LedgerToolCell{status}{text}, status ok|conditional|open|failed|missing|none;
+% a failed check is a finding about the result, shown plainly, not as an alarm
+\newcommand{\LedgerToolCell}[2]{\ledgercheck@mb{\LedgerToolWidth}{\csname ledgercheck@tool@#1\endcsname{#2}}}
+\newcommand{\ledgercheck@tool@ok}[1]{#1}
+\newcommand{\ledgercheck@tool@conditional}[1]{#1}
+\newcommand{\ledgercheck@tool@open}[1]{#1}
+\newcommand{\ledgercheck@tool@failed}[1]{\textbf{#1}}
+\newcommand{\ledgercheck@tool@missing}[1]{\textbf{not in the dump}}
+\newcommand{\ledgercheck@tool@none}[1]{---}
 % fixed cell widths keep the columns aligned from chunk to chunk; the attestation column is last, so
 % a long entry runs into the margin instead of into another column
 \newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
-\newcommand{\LedgerRow}[7]{%
-  \ledgercheck@mb{6.2cm}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} &
-  \ledgercheck@mb{2.7cm}{#4} & \ledgercheck@mb{1.3cm}{#5} & \ledgercheck@mb{0.5cm}{#6} & #7 \\}
+% \LedgerRow{result}{evidence}{statement source}{&cell&cell...}{register}{attestation}: the fourth argument
+% brings its own column separators, one cell per tool
+\newcommand{\LedgerRow}[6]{%
+  \ledgercheck@mb{\LedgerResultWidth}{#1} & \ledgercheck@mb{1.1cm}{#2 #3} #4 &
+  \ledgercheck@mb{0.5cm}{#5} & #6 \\}
 % the status table comes in chunks, each a plain tabular with its own header (neither longtable nor
 % supertabular nor p-columns work in the two-column quantumarticle class); pages break between chunks
 \newcommand{\LedgerTable}[1]{\par\noindent{\setlength{\tabcolsep}{3pt}%
-  \begin{tabular}{@{}llllll@{}}
-    \toprule Result & Ev. Stmt. & Lean & ProVerif & Reg. & Attestation\\ \midrule
-    #1
+  \edef\ledgercheck@cols{@{}ll\LedgerToolCols ll@{}}%
+  \expandafter\ledgercheck@table\expandafter{\ledgercheck@cols}{#1}}\par\vskip 4pt plus 6pt}
+\newcommand{\ledgercheck@table}[2]{%
+  \begin{tabular}{#1}
+    \toprule Result & Ev. Stmt. \LedgerToolHead & Reg. & Attestation\\ \midrule
+    #2
     \bottomrule
-  \end{tabular}}\par\vskip 4pt plus 6pt}
+  \end{tabular}}
 
 % ---- marker ---------------------------------------------------------------
 \newcommand{\ledgerrootshort}{%
@@ -124,8 +123,11 @@
   \LedgerNGreen{} \ledgercheck@lvl@green, \LedgerNYellow{} \ledgercheck@lvl@yellow,
   \LedgerNConj{} \mbox{\ledgercheck@lvl@conjecture} (a different kind of statement, not a worse grade);
   \LedgerNStale{} with only \ledgercheck@st@stale{} attestations; \LedgerNNone{} not yet attested.
-  Lean status: \LedgerNAssumes{} rest on a hypothesis that is assumed, not proved; \LedgerNSorry{} contain
-  \texttt{sorry}.
+  \ifnum\LedgerNConditional>0 Machine checks: \LedgerNConditional{} hold given a hypothesis that is assumed, not
+  proved.\fi
+  \ifnum\LedgerNOpen>0 \LedgerNOpen{} have an open item in a machine check (an unfinished proof, an extra axiom,
+  an inconclusive result).\fi
+  \ifnum\LedgerNFailed>0 \LedgerNFailed{} have a failed or missing machine check.\fi
   \ifnum\LedgerNAtt>0 \LedgerNSignedAtt{} of \LedgerNAtt{} attestations carry a valid signature.\fi}
 
 \newcommand{\ledgerappendix}{%
@@ -139,12 +141,12 @@
     \begin{center}\ttfamily\small
       \LedgerRootA\\\LedgerRootB\\\LedgerRootC\\\LedgerRootD
     \end{center}
-    \noindent The root is a Merkle hash over the exact kernel terms of the Lean declarations behind each
-    result, the statements of the results as typeset in this paper, the assumptions and cited
-    hypotheses, the assertions made by the authors, the attestations given by named persons, the
-    toolchain, and the source of this paper (hash \texttt{\LedgerSource}, excluding the files that show
-    the root and this table). Changing any of these changes the root. Supplementary data (ledger files,
-    Lean sources, verification tool): \LedgerSupplement.
+    \noindent The root is a Merkle hash over the evidence behind each result as recorded by the tools that
+    checked it (\LedgerToolNames), the data and processing steps it rests on, the statements of the results
+    as typeset in this paper, the assumptions and cited hypotheses, the assertions made by the authors, the
+    attestations given by named persons, the environment (tool versions), and the source of this paper
+    (hash \texttt{\LedgerSource}, excluding the files that show the root and this table). Changing any of
+    these changes the root. Supplementary data (ledger files, sources, verification tool): \LedgerSupplement.
 
     \par\medskip\noindent\textbf{What it does and does not establish.}
     The root shows that the data in the supplement is exactly the data this table was derived from.
@@ -153,23 +155,23 @@
     to the hash of the statement as typeset, and is shown as \ledgercheck@st@stale{} when the statement
     has changed since. GREEN: the named author has personally done the checklist and stands behind the
     result. YELLOW: convinced and the gap repairable, but would not yet defend it against experts.
-    CONJECTURE: a claim without proof. The Lean column is a machine check and is shown in a neutral
+    CONJECTURE: a claim without proof. The tool columns are machine checks and are shown in a neutral
     style.
 
     \par\medskip\noindent\textbf{How to check.}
     Recompute all hashes from the supplement and compare with the root above:
-    \texttt{\LedgerVerify}. To also re-derive the Lean part, rebuild the Lean dump from the Lean
-    sources in the supplement (see its README), then run the same command.
+    \texttt{\LedgerVerify}. To also re-derive what the tools recorded, rerun them from the sources in the
+    supplement (\texttt{ledger.py extract}, \texttt{ledger.py check}; see its README), then run the same command.
 
     \par\medskip
     {\scriptsize\LedgerChunks}
     \ifdefined\LedgerNHyp\ifnum\LedgerNHyp>0
-      \par\medskip\noindent\textbf{Hypotheses.} Results marked \emph{given} [H1] are proved in Lean given the
+      \par\medskip\noindent\textbf{Hypotheses.} Results marked \emph{given} [H1] are shown by a tool given the
       hypothesis H1 of the table below, a statement that is assumed there, not proved. If it is a known theorem of the literature, a named
       person can attest that: they found the cited statement, compared it with the formal definition and
       checked that the conditions match. The attestation is bound to the hash of the statement in this paper, the
       formal definition and the cited sources, so it becomes \ledgercheck@st@stale{} when any of them changes. It does not
-      make the hypothesis a proof in Lean; it says who vouches that the assumption is a theorem.
+      make the hypothesis a machine-checked proof; it says who vouches that the assumption is a theorem.
       Currently \LedgerNHypKnown{} of \LedgerNHyp{} hypotheses are attested as known theorems.\par\smallskip
       {\footnotesize\noindent\begin{tabular}{@{}lllll@{}}
         \toprule Key & In this paper & Formal hypothesis & Cited & Attested as known theorem\\ \midrule
@@ -192,15 +194,14 @@
       {\footnotesize\noindent\begin{tabular}{@{}lll@{}} Person & Fingerprint & Introduced by\\\midrule
         \LedgerKeys\end{tabular}}\par\medskip
     \fi
-    \noindent Ev.: evidence type, E1 checked proof, E2 checked certificate, E3 exact computation, E4 numerical
-    evidence, E5 assertion. Stmt.: \texttt{tex} = taken from this paper's source by its label,
-    \texttt{manual} = written in the ledger. Lean: \emph{checked} = accepted by the Lean kernel with the
-    standard axioms only; \emph{given} [H$k$] = in addition the hypothesis with key H$k$ in the Hypotheses table is
-    assumed, not proved;
-    --- = no Lean declaration. ProVerif: \emph{query true/false} = the named query of the cited model,
-    checked by the tool (a false query is an attack on that model, not a proof of insecurity of the
-    protocol); \emph{cannot be proved} = inconclusive; --- = no ProVerif query. Reg.: number of open
-    assumptions on which the result rests. A result covering several labels appears once per label.
+    \ifnum\LedgerNChecklist>0
+      \par\medskip\noindent\textbf{Checklist.} An attestation lists the items of this checklist that the person
+      has done: \LedgerChecklist.\par\medskip
+    \fi
+    \noindent Ev.: evidence type, \LedgerEvidenceLegend. Stmt.: \texttt{tex} = taken from this paper's source
+    by its label, \texttt{manual} = written in the ledger. \LedgerToolLegend{} --- = no evidence of that kind.
+    Reg.: number of open assumptions on which the result rests (assumed hypotheses, cited results, data taken
+    as given, manual steps, assertions). A result covering several labels appears once per label.
   \else
     \par\noindent{\color{ledgerred}\textbf{UNSEALED DRAFT.}} No ledger root file
     (\texttt{ledger-\ledgercheck@paper-root.tex}) was found; run

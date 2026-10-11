@@ -3,6 +3,13 @@
  "environment": {
   "toolchain": "leanprover/lean4:v4.34.1"
  },
+ "labels": {
+  "assumes": "checked, given",
+  "axioms": "extra axioms",
+  "ok": "checked",
+  "sorry": "contains sorry"
+ },
+ "legend": "checked = accepted by the Lean kernel with the standard axioms only; checked, given [Hk] = in addition the hypothesis Hk of the Hypotheses table is assumed, not proved; extra axioms = the proof uses an axiom beyond the standard ones; contains sorry = the proof is unfinished.",
  "nodes": {
   "Toy.f": {
    "content": {
@@ -104,6 +111,7 @@
    "word": "assumes"
   }
  },
+ "title": "Lean",
  "version": "0.2.0",
  "words": [
   "ok",

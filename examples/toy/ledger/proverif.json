@@ -1,5 +1,11 @@
 {
  "adapter": "proverif",
+ "labels": {
+  "false": "query false",
+  "ok": "query true",
+  "unproved": "cannot be proved"
+ },
+ "legend": "query true/false = the named query of the cited model, checked by ProVerif (a false query is an attack on that model, not a proof of insecurity of the protocol); cannot be proved = inconclusive.",
  "nodes": {
   "proverif/example.pv#attacker(s_enc)": {
    "content": {
@@ -30,5 +36,6 @@
    "word": "false"
   }
  },
+ "title": "ProVerif",
  "version": "0.1.0"
 }

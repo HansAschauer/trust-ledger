@@ -31,6 +31,7 @@ files + `ledgercheck.sty`, tested by compiling a real paper), and the environmen
    additive), with `examples/lab`.
 5. Evidence vocabulary and checklists configurable in `ledger.toml` (E1 to E5 as the default profile);
    one status column per adapter in `status` and `ledgercheck.sty` instead of fixed Lean/ProVerif columns.
+   **Done.** (The review packet is still Lean-centred: back-translations of Lean statements.)
 6. Toy examples for a lab measurement and a preregistered study, in the test suite; DVC/Snakemake import
    as a step adapter; `reproduce`.
 

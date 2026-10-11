@@ -86,7 +86,8 @@ extract = "ledger/dump.sh | python3 adapters/lean.py"
 `ledger.py -P NAME tex` writes `ledger-NAME-root.tex` and `ledger-NAME-status.tex` into the
 `[generated]` directory (excluded from the hashed source, so the root can sit in the document it
 covers). `\usepackage[paper=NAME]{ledgercheck}` then appends the appendix "Evidence ledger" (status
-banner, root, explanation, how to check, table) automatically. Without the generated files it prints
+banner, root, explanation, how to check, table) automatically. The table has one column per tool the
+paper's claims use, with the headings, texts and legends the adapters supply. Without the generated files it prints
 "UNSEALED DRAFT"; without the `paper=` option it does nothing. To switch it on without touching the
 paper source (e.g. in a publish script), load it at the end of the preamble; a plain
 `\RequirePackage` before `\documentclass` collides with classes that define `\toprule`:

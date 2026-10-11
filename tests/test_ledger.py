@@ -254,7 +254,7 @@ class Latex(Toy):
         self.assertTrue(L.known_theorem("Toy.BanachProp"))
         lg.main(["-C", str(self.p), "-P", "toy", "tex"])
         st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
-        self.assertIn("\\LedgerLeanGiven{H1}", st)                       # compact: a key into the hypotheses table
+        self.assertIn("\\LedgerToolCell{conditional}{checked, given [H1]}", st)   # compact: a key into the hypotheses table
         self.assertIn("\\def\\LedgerNHypKnown{1}", st)
         self.assertIn("\\LedgerHypRow{H1}{Lemma~\\ref{lem:banach}}", st)
         # the register entry stays: the formalisation still assumes it
@@ -668,6 +668,64 @@ class Adapters(unittest.TestCase):
     def test_old_proverif_section_is_an_error(self):
         self.add("ledger.toml", '\n[proverif]\ndump = "proverif.json"\n')
         self.assertTrue(any("[adapter.proverif]" in e for e in self.L().errors))
+
+
+class Vocabulary(unittest.TestCase):
+    """Evidence types, checklists and tool columns come from the configuration and the adapters."""
+    setUp, tearDown, L = Toy.setUp, Toy.tearDown, Toy.L
+    add = Adapters.add
+
+    def status_tex(self):
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        return (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+
+    def test_own_evidence_vocabulary(self):
+        self.add("ledger.toml", '\n[[evidence]]\nid = "confirmatory"\nname = "preregistered, confirmatory"\n'
+                                '\n[[evidence]]\nid = "exploratory"\nname = "exploratory analysis"\n')
+        errs = " ".join(self.L().errors)
+        self.assertIn("unknown evidence type 'E1' (known: confirmatory, exploratory)", errs)
+        f = self.p / "ledger" / "claims.toml"
+        f.write_text(re.sub(r'evidence = "E[1-5]"\n', "", f.read_text()))
+        L = self.L()
+        self.assertEqual(L.errors, [])
+        self.assertEqual(L.ev(L.claims["lem-succ"]), "exploratory")              # default: the weakest
+        self.assertIn("\\def\\LedgerEvidenceLegend{confirmatory preregistered, confirmatory, exploratory "
+                      "exploratory analysis}", self.status_tex())
+
+    def test_weakest_link_warning(self):
+        f = self.p / "ledger" / "claims.toml"
+        f.write_text(f.read_text().replace('label = "lem:succ"\npaper = "toy"\nevidence = "E1"',
+                                           'label = "lem:succ"\npaper = "toy"\nevidence = "E4"'))
+        self.assertTrue(any("thm-twice declares E1 but uses lem-succ, which declares E4" in w for w in self.L().warnings))
+
+    def test_checklist_is_enforced_once_defined(self):
+        args = ["-C", str(self.p), "attest", "lem-succ", "--person", "X", "--level", "green", "--checklist", "A1,Z9"]
+        self.assertEqual(lg.main(args), 0)                                         # no checklist defined: free
+        self.add("ledger.toml", '\n[checklist.A1]\ntext = "compared the formal statement with the text"\n'
+                                '\n[checklist.H1]\ntext = "found the cited statement"\napplies = "hypothesis"\n')
+        self.assertTrue(any("checklist item 'Z9' is not defined" in e for e in self.L().errors))
+        (self.p / "ledger" / "attestations.toml").unlink()
+        with self.assertRaises(SystemExit):
+            lg.main(args)
+        with self.assertRaises(SystemExit):                                        # H1 is for hypotheses only
+            lg.main(args[:-1] + ["H1"])
+        self.assertEqual(lg.main(args[:-1] + ["A1"]), 0)
+        self.assertEqual(lg.main(["-C", str(self.p), "attest", "--hypothesis", "Toy.BanachProp", "--person", "X",
+                                  "--level", "green", "--checklist", "H1"]), 0)
+        st = self.status_tex()
+        self.assertIn("\\def\\LedgerNChecklist{2}", st)
+        self.assertIn("A1: compared the formal statement with the text", st)
+
+    def test_tool_columns_follow_the_adapters_in_use(self):
+        st = self.status_tex()
+        self.assertIn("\\def\\LedgerToolHead{& Lean& ProVerif}", st)
+        self.assertIn("\\LedgerToolCell{ok}{query true}", st)
+        f = self.p / "ledger" / "claims.toml"                                      # no claim uses ProVerif any more
+        f.write_text(f.read_text().replace('proverif = ["proverif/example.pv#attacker(s_enc)"]\n', ""))
+        st = self.status_tex()
+        self.assertIn("\\def\\LedgerToolHead{& Lean}", st)
+        self.assertIn("\\def\\LedgerToolCols{l}", st)
+        self.assertNotIn("ProVerif", st)
 
 
 LAB = ROOT / "examples" / "lab"

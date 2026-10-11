@@ -27,10 +27,10 @@ field-specific tools during `status`, `lock` or `verify`; those read dumps and f
 | extracting evidence from tools | adapter dumps (`FORMAT.md` 2.6), written by any program | done; Lean and ProVerif use it |
 | which part is statement, which evidence | the adapter's `spec` per node kind | done |
 | open items a field cares about | the adapter's `register` items (`hyp:` makes a hypothesis) | done |
-| status words shown per claim | the adapter's `status` and `word` | done; table columns still fixed (Lean, ProVerif) |
+| status words shown per claim | the adapter's `status`, `word`, and its `title`, `labels`, `legend` | done: one column per tool in use |
 | data, steps, checks (no tool of its own) | built-in kinds `source`, `step`, `check`; salted commitments | done (`examples/lab`) |
-| evidence vocabulary (E1 to E5 for mathematics) | a table in `ledger.toml`, E1 to E5 as default | planned |
-| checklists for attesting persons | per node kind, in `ledger.toml` | planned |
+| evidence vocabulary (E1 to E5 for mathematics) | `[[evidence]]` in `ledger.toml`, E1 to E5 as default | done |
+| checklists for attesting persons | `[checklist.ID]` in `ledger.toml`, for claims or hypotheses | done |
 | the paper (LaTeX now) | a paper adapter: claim id to statement text | planned |
 
 Why dumps and not a plugin API: adapters can be written in the language of the field (R, Matlab, Lean,

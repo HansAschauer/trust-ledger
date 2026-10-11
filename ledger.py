@@ -26,7 +26,10 @@ LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
 ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
-EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
+# the default evidence vocabulary (mathematics), strongest first; a project may define its own as [[evidence]]
+DEFAULT_EVIDENCE = [dict(id="E1", name="checked proof"), dict(id="E2", name="checked certificate"),
+                    dict(id="E3", name="exact computation"), dict(id="E4", name="numerical evidence"),
+                    dict(id="E5", name="assertion")]
 # adapters (FORMAT.md section 2.6): a claim lists references into an adapter's dump under the adapter's name
 CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "sources", "uses", "cites", "note"}
 ADAPTER_STATUS = ("ok", "conditional", "open", "failed")  # increasing severity; a claim shows its worst reference
@@ -542,6 +545,9 @@ def check_dump(d):
             out.append(f"{ref}: result must be true or false, info an object")
     if not isinstance(d.get("words", []), list) or not isinstance(d.get("environment", {}), dict):
         out.append("words must be a list, environment an object")
+    if not isinstance(d.get("title", ""), str) or not isinstance(d.get("legend", ""), str) \
+            or not isinstance(d.get("labels", {}), dict):
+        out.append("title and legend must be strings, labels an object (word: text)")
     return out
 
 
@@ -561,7 +567,32 @@ class Ledger:
         self.load_papers()
         self.build()
 
+    def ev(self, c):
+        """A claim's declared evidence type; without one, the weakest of the vocabulary."""
+        return c.get("evidence", self.evidence_ids[-1])
+
+    def load_vocabularies(self):
+        """Evidence types ([[evidence]], strongest first) and checklist items ([checklist.ID]) of ledger.toml."""
+        self.evidence = self.cfg.get("evidence") or DEFAULT_EVIDENCE
+        if not all(isinstance(e, dict) and e.get("id") and e.get("name") for e in self.evidence):
+            self.errors.append("ledger.toml: every [[evidence]] needs an `id` and a `name`")
+            self.evidence = DEFAULT_EVIDENCE
+        self.evidence_ids = [e["id"] for e in self.evidence]
+        self.checklist = self.cfg.get("checklist", {})
+        for k, item in self.checklist.items():
+            if not item.get("text") or item.get("applies", "claim") not in ("claim", "hypothesis", "both"):
+                self.errors.append(f"checklist {k}: needs a `text`; `applies` is claim, hypothesis or both")
+
+    def checklist_problems(self, a):
+        """Unknown or inapplicable checklist items of attestation a (none if the project defines no checklist)."""
+        if not self.checklist:
+            return []
+        target = "hypothesis" if a.get("hypothesis") else "claim"
+        return [x for x in a.get("checklist", []) if x not in self.checklist
+                or self.checklist[x].get("applies", "claim") not in (target, "both")]
+
     def load_human(self):
+        self.load_vocabularies()
         self.claims, self.citations, self.assertions, self.attestations, self.keys = {}, {}, {}, [], {}
         self.hypotheses, self.assessments = {}, {}
         self.sources, self.steps, self.checks = {}, {}, {}
@@ -588,8 +619,9 @@ class Ledger:
             if not ch.get("command"):
                 self.errors.append(f"check {n}: needs a `command`")
         for n, c in self.claims.items():
-            if c.get("evidence", "E5") not in EVIDENCE:
-                self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
+            if self.ev(c) not in self.evidence_ids:
+                self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r} "
+                                   f"(known: {', '.join(self.evidence_ids)})")
         self.apply_scope()
         for a in self.attestations:
             if bool(a.get("claim")) == bool(a.get("hypothesis")):
@@ -598,6 +630,9 @@ class Ledger:
                 self.errors.append(f"attestation on {a.get('claim')}: unknown level {a.get('level')!r}")
             elif a["level"] == "yellow" and not a.get("reason"):
                 self.errors.append(f"attestation on {a.get('claim')}: yellow needs a reason")
+            for x in self.checklist_problems(a):
+                self.errors.append(f"attestation by {a.get('person')} on {a.get('claim') or a.get('hypothesis')}: "
+                                   f"checklist item {x!r} is not defined for it in ledger.toml")
         for n, a in self.assessments.items():
             if a.get("verdict") not in ASSESSMENT_VERDICTS:
                 self.errors.append(f"assessment {n}: verdict must be one of {', '.join(ASSESSMENT_VERDICTS)}")
@@ -752,7 +787,8 @@ class Ledger:
         self.decls = {n: nd["content"] for n, nd in lean.items()}  # Lean declarations, for the review packet
 
     def load_dump(self, name, ac, hint):
-        a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={}, words=[], environment=None)
+        a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={}, words=[], environment=None,
+                                       title=name, labels={}, legend="")
         p = self.dir / ac.get("dump", name + ".json")
         if not p.exists():
             if any(c.get(name) for c in self.claims.values()):
@@ -763,7 +799,8 @@ class Ledger:
         self.errors += [f"{p.name}: {x}" for x in problems]
         if problems:
             return  # an invalid dump contributes nothing
-        a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"))
+        a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"),
+                 title=d.get("title", name), labels=d.get("labels", {}), legend=d.get("legend", ""))
         if d.get("env_hash") and d["env_hash"] != self.env_hash():
             self.errors.append(f"{p.name} is older than the sources it was extracted from "
                                f"(environment files changed): run `{hint}`")
@@ -901,7 +938,7 @@ class Ledger:
                 else:
                     self.errors.append(f"claim {n}: unknown claim {u} in uses")
             payload[i] = dict(kind="claim", provenance="asserted", content=dict(
-                text=self.stmt[n][0], source=self.stmt[n][1], label=c.get("label", ""), evidence=c.get("evidence", "E5")))
+                text=self.stmt[n][0], source=self.stmt[n][1], label=c.get("label", ""), evidence=self.ev(c)))
             deps[i] = sorted(set(d))
         self.attest_ids = []
         for k, a in enumerate(self.attestations):
@@ -946,6 +983,12 @@ class Ledger:
         self.root_hash = H("root", [[i, self.full[i]] for i in sorted(payload)
                                     if payload[i]["kind"] in ROOT_KINDS])
         self.register = self.compute_register()
+        rank = {e: k for k, e in enumerate(self.evidence_ids)}  # 0 = strongest
+        for n, c in self.claims.items():
+            for u in c.get("uses", []):
+                if u in self.claims and rank.get(self.ev(self.claims[u]), 0) > rank.get(self.ev(c), 0):
+                    self.warnings.append(f"claim {n} declares {self.ev(c)} but uses {u}, which declares "
+                                         f"{self.ev(self.claims[u])}: a result is no stronger than what it rests on")
 
     # -------------------------------------------------------- data, steps, checks (FORMAT.md 3.4)
     def file_node(self, payload, deps, f, who):
@@ -1075,19 +1118,27 @@ class Ledger:
         """Node ids of the adapter references of claim c."""
         return [a["prefix"] + ref for name, a in self.adapters.items() for ref in c.get(name, [])]
 
-    def adapter_status(self, name, n):
-        """The word of the worst-status node among claim n's references into adapter `name` (its `word`,
-        else its status), 'missing' if a reference is not in the dump, '-' if the claim has none."""
+    def adapter_state(self, name, n):
+        """(status, word) of the worst node among claim n's references into adapter `name`; ('missing', 'missing')
+        if a reference is not in the dump, ('none', '-') if the claim has none."""
         a, refs = self.adapters.get(name), self.claims[n].get(name, [])
         if not refs or a is None:
-            return "-"
+            return "none", "-"
         nodes = [a["nodes"].get(r) for r in refs]
         if any(x is None for x in nodes):
-            return "missing"
+            return "missing", "missing"
         rank = lambda x: (ADAPTER_STATUS.index(x["status"]),
                           a["words"].index(x["word"]) if x.get("word") in a["words"] else -1)
         worst = max(nodes, key=rank)  # equal status: the later of the dump's `words` (best to worst)
-        return worst.get("word", worst["status"])
+        return worst["status"], worst.get("word", worst["status"])
+
+    def adapter_status(self, name, n):
+        """The word (else the status) of claim n's worst reference into adapter `name`; 'missing' or '-'."""
+        return self.adapter_state(name, n)[1]
+
+    def tools_in_scope(self):
+        """Adapters that at least one claim in scope refers to, in configuration order (checks last)."""
+        return [name for name in self.adapters if any(c.get(name) for c in self.claims.values())]
 
     def proverif_status(self, n):
         """'ok' (every query true), 'false' (an attack was found), 'unproved' ('cannot be proved'),
@@ -1186,21 +1237,24 @@ class Ledger:
 # ---------------------------------------------------------------- commands
 def cmd_status(L, args):
     word = {"green": "GREEN", "yellow": "YELLOW", "conjecture": "CONJECTURE"}
-    rows = [("claim", "evid", "stmt", "lean", "proverif", "attestation", "register")]
+    tools = L.tools_in_scope()
+    rows = [("claim", "evid", "stmt", *tools, "attestation", "register")]
     stale = 0
     for n in sorted(L.claims):
         att = []
         for p, lvl, date, cur in L.attestation_state(n):
             att.append(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}")
             stale += not cur
-        ls = L.lean_status(n)
-        hs = L.claim_hypotheses(n)
-        if ls == "assumes" and hs:
-            k = sum(L.known_theorem(h) for h in hs)
-            ls += f" ({k}/{len(hs)} known thm.)" if k else ""
-        rows.append((n, L.claims[n].get("evidence", "E5"), L.stmt[n][1], ls, L.proverif_status(n),
-                     "; ".join(att) or "none", str(len(L.register[n]))))
-    w = [max(len(r[i]) for r in rows) for i in range(7)]
+        cells = []
+        for t in tools:
+            status, w = L.adapter_state(t, n)
+            hs = L.claim_hypotheses(n)
+            if status == "conditional" and hs:
+                k = sum(L.known_theorem(h) for h in hs)
+                w += f" ({k}/{len(hs)} known thm.)" if k else ""
+            cells.append(w)
+        rows.append((n, L.ev(L.claims[n]), L.stmt[n][1], *cells, "; ".join(att) or "none", str(len(L.register[n]))))
+    w = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
     if L.scope_hyps:
@@ -1242,7 +1296,7 @@ def cmd_why(L, args):
         sys.exit(f"unknown claim {n}")
     c = L.claims[n]
     tools = "".join(f", {name} {L.adapter_status(name, n)}" for name in L.adapters if c.get(name))
-    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}{tools}, spec {L.cspec[n][:12]}")
+    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {L.ev(c)}{tools}, spec {L.cspec[n][:12]}")
     print("  rests on:")
     seen, todo = set(), list(L.deps["claim:" + n])
     while todo:
@@ -1294,7 +1348,7 @@ def cmd_tex(L, args):
              f"\\def\\LedgerPaper{{{L.paper}}}", f"\\def\\LedgerRoot{{{r}}}", f"\\def\\LedgerRootShort{{{r[:12]}}}"]
     lines += [f"\\def\\LedgerRoot{c}{{{r[16 * k:16 * k + 16]}}}" for k, c in enumerate("ABCD")]
     lines += [f"\\def\\LedgerSource{{{src}}}", f"\\def\\LedgerTool{{{tool}}}",
-              f"\\def\\LedgerFormat{{0}}", f"\\def\\LedgerDate{{{datetime.date.today().isoformat()}}}",
+              f"\\def\\LedgerFormat{{{FORMAT_VERSION}}}", f"\\def\\LedgerDate{{{datetime.date.today().isoformat()}}}",
               "\\def\\LedgerSupplement{%s}" % tex_esc(pc.get("supplement", "the supplementary repository of this paper")),
               "\\def\\LedgerVerify{%s}" % tex_esc(pc.get("verify", f"python3 ledger.py -P {L.paper} verify"))]
     (out / f"ledger-{L.paper}-root.tex").write_text("\n".join(lines) + "\n")
@@ -1310,11 +1364,14 @@ def cmd_tex(L, args):
     entries.sort()
     names = sorted(L.claims)
     cnt = dict(green=0, yellow=0, conjecture=0, stale=0, none=0)
-    assumes = sorry = 0
+    tools = L.tools_in_scope()
+    worst = dict(conditional=0, open=0, failed=0)  # claims by their worst machine-check status
     for n in names:
         cnt[L.attestation_summary(n)] += 1
-        ls = L.lean_status(n)
-        assumes += ls == "assumes"; sorry += ls == "sorry"
+        sts = [L.adapter_state(t, n)[0] for t in tools]
+        sts = ["failed" if x == "missing" else x for x in sts if x != "none"]
+        if sts and max(sts, key=ADAPTER_STATUS.index) in worst:
+            worst[max(sts, key=ADAPTER_STATUS.index)] += 1
     def reference(c, lab):
         parsed = L.parsed.get(c.get("paper")) or [x for v in L.parsed.values() for x in v]
         return reference_tex(lab, parsed, L.kind_words)
@@ -1329,21 +1386,23 @@ def cmd_tex(L, args):
         seen[lab] = seen.get(lab, 0) + 1
     for _, lab, n in entries:
         c = L.claims[n]
-        ls = L.lean_status(n)
         st = L.attestation_state(n)
-        cell = f"\\LedgerLeanCell{{{ls if ls != '-' else 'none'}}}"
-        if ls == "assumes" and L.claim_hypotheses(n):
-            cell = "\\LedgerLeanGiven{" + ", ".join(hkey[h] for h in sorted(L.claim_hypotheses(n), key=lambda h: hkey[h])) + "}"
-        pvs = L.proverif_status(n)
-        pvcell = f"\\LedgerProverifCell{{{pvs if pvs != '-' else 'none'}}}"
+        cells = ""
+        for t in tools:  # one neutral cell per tool: the adapter's text for its worst word
+            status, word = L.adapter_state(t, n)
+            text = tex_esc(L.adapters[t]["labels"].get(word, word))
+            if status == "conditional":
+                hs = sorted(L.claim_hypotheses(n), key=lambda h: hkey[h])
+                text += " [" + ", ".join(hkey[h] for h in hs) + "]" if hs else " hyp."
+            cells += f"&\\LedgerToolCell{{{status}}}{{{text}}}"
         att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
             f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{{L.signature_of(n, p)}}}"
             for p, lvl, date, cur in st) + "}") if st else "\\LedgerNoAtt"
         ref = reference(c, lab)
         res = (f"{ref} {{\\scriptsize\\texttt{{{tex_esc(lab)}}}}}" if ref else f"\\texttt{{{tex_esc(lab)}}}") \
             + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
-        rows.append(f"\\LedgerRow{{{res}}}{{{c.get('evidence', 'E5')}}}{{{L.stmt[n][1]}}}"
-                    f"{{{cell}}}{{{pvcell}}}{{{len(L.register[n])}}}{{{att}}}")
+        rows.append(f"\\LedgerRow{{{res}}}{{{tex_esc(L.ev(c))}}}{{{L.stmt[n][1]}}}"
+                    f"{{{cells}}}{{{len(L.register[n])}}}{{{att}}}")
     counted = [(n, p) for n in names for p, *_ in L.attestation_state(n)]
     nsigned = sum(L.signature_of(n, p) == "signed" for n, p in counted)
     keyrows = []
@@ -1384,7 +1443,19 @@ def cmd_tex(L, args):
           "\\def\\LedgerUncovered{%s}" % ", ".join(uncovered_refs),
           "\\def\\LedgerKeys{%"] + keyrows + ["}"]
     cl += [f"\\def\\LedgerN{k}{{{v}}}" for k, v in (("Green", cnt["green"]), ("Yellow", cnt["yellow"]),
-           ("Conj", cnt["conjecture"]), ("Stale", cnt["stale"]), ("None", cnt["none"]), ("Assumes", assumes), ("Sorry", sorry))]
+           ("Conj", cnt["conjecture"]), ("Stale", cnt["stale"]), ("None", cnt["none"]),
+           ("Conditional", worst["conditional"]), ("Open", worst["open"]), ("Failed", worst["failed"]))]
+    # the tool columns, and the legends: all from the configuration and the adapters, nothing tool-specific here
+    titles = [tex_esc(L.adapters[t]["title"]) for t in tools]
+    tool_w = 2.6
+    cl += ["\\def\\LedgerToolCols{%s}" % ("l" * len(tools)), "\\def\\LedgerToolHead{%s}" % "".join("& " + x for x in titles),
+           f"\\def\\LedgerToolWidth{{{tool_w}cm}}", f"\\def\\LedgerResultWidth{{{max(4.0, 10.2 - tool_w * len(tools)):.1f}cm}}",
+           "\\def\\LedgerToolNames{%s}" % (", ".join(titles) or "none"),
+           "\\def\\LedgerToolLegend{%s}" % " ".join(f"{titles[k]}: {tex_esc(L.adapters[t]['legend'])}"
+                                                    for k, t in enumerate(tools) if L.adapters[t]["legend"]),
+           "\\def\\LedgerEvidenceLegend{%s}" % ", ".join(f"{tex_esc(e['id'])} {tex_esc(e['name'])}" for e in L.evidence),
+           f"\\def\\LedgerNChecklist{{{len(L.checklist)}}}",
+           "\\def\\LedgerChecklist{%s}" % "; ".join(f"{tex_esc(k)}: {tex_esc(v['text'])}" for k, v in L.checklist.items())]
     # plain tabulars of CHUNK rows each: page breaks fall between them (longtable/supertabular fail in
     # the two-column journal class)
     CHUNK = 8
@@ -1533,7 +1604,7 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
         out.append("\\clearpage\\onecolumn")  # again: a page break inside one-column mode can fall back to two columns (ltxgrid classes)
         out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\label{{rv:{n}}}\\par\\smallskip")
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
-                   f"\\textbf{{Evidence}} {tex_esc(c.get('evidence', 'E5'))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
+                   f"\\textbf{{Evidence}} {tex_esc(L.ev(c))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
                    f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
         out += review_relations_tex(L, n, names)
         out.append("{\\large\\bfseries In the paper}\\par\\smallskip")
@@ -1713,6 +1784,10 @@ def cmd_attest(L, args):
     rec = dict(**target, person=args.person, date=datetime.date.today().isoformat(), level=args.level,
                reason=args.reason or "", checklist=[x for x in (args.checklist or "").split(",") if x],
                bound=bound)
+    bad = L.checklist_problems(rec)
+    if bad:
+        sys.exit(f"checklist item(s) {', '.join(bad)} not defined for this target in ledger.toml; defined: "
+                 + ", ".join(f"{k} ({v.get('applies', 'claim')})" for k, v in L.checklist.items()))
     extra = ""
     if args.sign:
         if not args.key:
@@ -1764,7 +1839,10 @@ def cmd_check(L, args):
                                      exit=out.returncode, stdout_sha256=hashlib.sha256(out.stdout.encode()).hexdigest()),
                         spec=dict(name=n, command=ch["command"], code=code),
                         info=dict(stdout=out.stdout[-2000:], stderr=out.stderr[-2000:]))
-    dump = dict(adapter="checks", version=__version__, nodes=nodes, env_hash=L.env_hash())
+    dump = dict(adapter="checks", version=__version__, nodes=nodes, env_hash=L.env_hash(), title="Check",
+                labels={"pass": "pass", "fail": "fail"},
+                legend="pass/fail = the check script, which tests the result against its data, exits with 0 / "
+                       "another code on the recorded inputs.")
     (L.dir / "checks.json").write_text(json.dumps(dump, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
     print(f"wrote {L.dir / 'checks.json'}" + (f"; {failed} check(s) failed (recorded as such)" if failed else ""))
     return 0

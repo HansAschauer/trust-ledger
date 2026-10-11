@@ -20,6 +20,11 @@ from pathlib import Path
 
 VERSION = "0.1.0"
 WORD = {"true": ("ok", "ok"), "false": ("failed", "false"), "cannot be proved": ("open", "unproved")}
+DISPLAY = dict(  # how the status table shows it (not hashed)
+    title="ProVerif",
+    labels={"ok": "query true", "false": "query false", "unproved": "cannot be proved"},
+    legend="query true/false = the named query of the cited model, checked by ProVerif (a false query is an attack "
+           "on that model, not a proof of insecurity of the protocol); cannot be proved = inconclusive.")
 
 
 def queries_of(text):
@@ -60,7 +65,7 @@ def main():
             status, word = WORD[result]
             nodes[f"{f}#{q}"] = dict(kind="proverif-query", content=dict(file=f, sha256=sha, query=q, result=result),
                                      status=status, word=word, register=[f"model:{f}"])
-    print(json.dumps(dict(adapter="proverif", version=VERSION, nodes=nodes), indent=1, sort_keys=True))
+    print(json.dumps(dict(adapter="proverif", version=VERSION, **DISPLAY, nodes=nodes), indent=1, sort_keys=True))
 
 
 if __name__ == "__main__":
