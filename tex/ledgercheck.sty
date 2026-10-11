@@ -91,8 +91,14 @@
 \newcommand{\ledgercheck@tool@missing}[1]{\textbf{not in the dump}}
 \newcommand{\ledgercheck@tool@none}[1]{---}
 % fixed cell widths keep the columns aligned from chunk to chunk; the attestation column is last, so
-% a long entry runs into the margin instead of into another column
+% a long entry runs into the margin instead of into another column. The generated status file redefines the
+% widths and columns for the tools in use; these defaults (one tool) serve documents that use the macros
+% without it.
 \newcommand{\ledgercheck@mb}[2]{\makebox[#1][l]{#2}}
+\newcommand*{\LedgerResultWidth}{7.6cm}
+\newcommand*{\LedgerToolWidth}{2.6cm}
+\newcommand*{\LedgerToolCols}{l}
+\newcommand*{\LedgerToolHead}{& Tool}
 % \LedgerRow{result}{evidence}{statement source}{&cell&cell...}{register}{attestation}: the fourth argument
 % brings its own column separators, one cell per tool
 \newcommand{\LedgerRow}[6]{%
