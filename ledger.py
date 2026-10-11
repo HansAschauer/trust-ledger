@@ -2,7 +2,7 @@
 """trust-ledger: a Merkle ledger of the evidence behind a paper's claims.
 
 Single file, Python >= 3.11, standard library only. Normative format: docs/FORMAT.md.
-Version 0.1.0 (alpha), ledger format 0.1.0.
+Version 0.2.0 (alpha), ledger format 0.2.0.
 
   ledger.py [-C DIR] status [--strict]   table of claims: Lean/ProVerif status, attestation, register size
   ledger.py [-C DIR] why CLAIM           everything CLAIM rests on, and who attested what
@@ -16,19 +16,18 @@ DIR is the project root; it must contain ledger/ledger.toml.
 import argparse, base64, datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, tomllib, unicodedata
 from pathlib import Path
 
-__version__ = "0.1.0"
-FORMAT_VERSION = "0.1.0"          # docs/FORMAT.md; recorded in every lock file
-READS_FORMATS = (0, "0.1.0")      # 0: lock files written before versioning, same hashing as 0.1.0
-STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
+__version__ = "0.2.0"
+FORMAT_VERSION = "0.2.0"          # docs/FORMAT.md; recorded in every lock file
+READS_FORMATS = ("0.2.0",)        # older lock files: `ledger.py migrate` (FORMAT.md 6)
 LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
 ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 # adapters (FORMAT.md section 2.6): a claim lists references into an adapter's dump under the adapter's name
-CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "lean", "files", "uses", "cites", "note"}
-ADAPTER_STATUS = ("ok", "open", "failed")    # increasing severity; a claim shows the worst of its references
-CORE_KINDS = {"lean-decl", "file", "paper-source", "claim", "citation", "assertion", "attestation", "key",
+CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "uses", "cites", "note"}
+ADAPTER_STATUS = ("ok", "conditional", "open", "failed")  # increasing severity; a claim shows its worst reference
+CORE_KINDS = {"file", "paper-source", "claim", "citation", "assertion", "attestation", "key",
               "hypothesis", "reading", "assessment", "environment"}
 
 
@@ -513,6 +512,13 @@ def check_dump(d):
             out.append(f"{ref}: register items must be strings 'kind:name'")
         if "spec" in n and not isinstance(n["spec"], dict):
             out.append(f"{ref}: spec must be an object")
+        for x in n.get("spec_deps", []):
+            if "spec" not in d["nodes"].get(x, {}) or x not in n.get("deps", []):
+                out.append(f"{ref}: spec dependency {x!r} must be a dependency with a spec")
+        if not isinstance(n.get("result", False), bool) or not isinstance(n.get("info", {}), dict):
+            out.append(f"{ref}: result must be true or false, info an object")
+    if not isinstance(d.get("words", []), list) or not isinstance(d.get("environment", {}), dict):
+        out.append("words must be a list, environment an object")
     return out
 
 
@@ -528,7 +534,6 @@ class Ledger:
         self.paper = paper
         self.errors, self.warnings = [], []
         self.load_human()
-        self.load_lean()
         self.load_adapters()
         self.load_papers()
         self.build()
@@ -689,32 +694,19 @@ class Ledger:
     def env_hash(self):
         return H("env-files", {f: sha_file(self.root / f) for f in self.env_files()})
 
-    def load_lean(self):
-        self.decls, self.toolchain = {}, ""
-        lc = self.cfg.get("lean")
-        if not lc:
-            return
-        p = self.dir / lc.get("dump", "lean.json")
-        if p.exists():
-            d = json.loads(p.read_text())
-            self.decls, self.toolchain = d["decls"], d.get("toolchain", "")
-            if d.get("env_hash") and d["env_hash"] != self.env_hash():
-                self.errors.append(f"{p.name} is older than the sources it was extracted from "
-                                   "(environment files changed): run `ledger.py extract`")
-        elif any(c.get("lean") for c in self.claims.values()):
-            self.errors.append(f"{p} missing: run `ledger.py extract`")
-
     def load_adapters(self):
-        """Adapter dumps (FORMAT.md 2.6): self.adapters[name] = {prefix, nodes: {reference: node}}."""
+        """Adapter dumps (FORMAT.md 2.6): self.adapters[name] = {prefix, nodes: {reference: node}, words,
+        environment}; claim references ending in `*` are expanded here."""
         self.adapters = {}
-        if "proverif" in self.cfg:
-            self.errors.append("ledger.toml: the [proverif] section is now [adapter.proverif], with a dump in the "
-                               "adapter format (docs/FORMAT.md 2.6; extractor adapters/proverif.py)")
+        for old in ("lean", "proverif"):
+            if old in self.cfg:
+                self.errors.append(f"ledger.toml: the [{old}] section is now [adapter.{old}], with a dump in the adapter "
+                                   f"format (docs/FORMAT.md 2.6; converter/extractor adapters/{old}.py)")
         for name, ac in self.cfg.get("adapter", {}).items():
             if name in CLAIM_FIELDS:
                 self.errors.append(f"adapter {name!r}: the name is a claim field")
                 continue
-            a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={})
+            a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={}, words=[], environment=None)
             p = self.dir / ac.get("dump", name + ".json")
             if not p.exists():
                 if any(c.get(name) for c in self.claims.values()):
@@ -723,13 +715,26 @@ class Ledger:
             d = json.loads(p.read_text())
             problems = check_dump(d)
             self.errors += [f"{p.name}: {x}" for x in problems]
-            a["nodes"] = {} if problems else d["nodes"]  # an invalid dump contributes nothing
+            if problems:
+                continue  # an invalid dump contributes nothing
+            a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"))
+            if d.get("env_hash") and d["env_hash"] != self.env_hash():
+                self.errors.append(f"{p.name} is older than the sources it was extracted from "
+                                   "(environment files changed): run `ledger.py extract`")
+        for c in self.claims.values():
+            for name, a in self.adapters.items():
+                if name in c:
+                    c[name] = self.expand(a, c[name])
+        lean = self.adapters.get("lean", {}).get("nodes", {})
+        self.decls = {n: nd["content"] for n, nd in lean.items()}  # Lean declarations, for the review packet
 
-    def expand_lean(self, names):
+    @staticmethod
+    def expand(a, refs):
+        """`Prefix*` stands for every result node (`result: true`) of the dump whose reference starts with Prefix."""
         out = []
-        for x in names:
+        for x in refs:
             if x.endswith("*"):
-                out += sorted(n for n, d in self.decls.items() if n.startswith(x[:-1]) and d["kind"] == "theorem")
+                out += sorted(r for r, nd in a["nodes"].items() if r.startswith(x[:-1]) and nd.get("result"))
             else:
                 out.append(x)
         return out
@@ -739,21 +744,10 @@ class Ledger:
         payload, deps = {}, {}  # full graph
         env_files = {f: sha_file(self.root / f) for f in self.env_files()}
         env = "env:" + self.cfg.get("project", {}).get("name", "project")
-        payload[env] = dict(kind="environment", provenance="computed",
-                            content=dict(toolchain=self.toolchain, files=env_files))
+        payload[env] = dict(kind="environment", provenance="computed", content=dict(
+            files=env_files, adapters={k: a["environment"] for k, a in sorted(self.adapters.items()) if a["environment"]}))
         deps[env] = []
         self.spec_payload, self.spec_deps = {}, {}
-        for n, d in self.decls.items():
-            i = "lean:" + n
-            if d["kind"] == "theorem" and not d.get("proof_term") and not d.get("proof"):
-                self.errors.append(f"dump: theorem {n} has no proof term (extractor bug?)")
-            payload[i] = dict(kind="lean-decl", provenance="computed", content=dict(
-                {k: v for k, v in d.items() if k not in ("stmt_deps", "proof_deps", "line", "module")}, name=n))
-            sd = sorted({"lean:" + x for x in d.get("stmt_deps", []) if x in self.decls})
-            pd = sorted({"lean:" + x for x in d.get("proof_deps", []) if x in self.decls})
-            deps[i] = sorted(set(sd) | set(pd) | {env})
-            self.spec_payload[i] = {k: d.get(k, "") for k in ("kind", "type", "type_term", "value", "value_term")} | dict(name=n)
-            self.spec_deps[i] = sd
         for n, c in self.citations.items():
             i = "cite:" + n
             payload[i] = dict(kind="citation", provenance="asserted",
@@ -778,10 +772,10 @@ class Ledger:
             for ref, nd in a["nodes"].items():
                 i = a["prefix"] + ref
                 payload[i] = dict(kind=nd["kind"], provenance="computed", content=nd["content"])
-                deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", [])})
+                deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", [])} | {env})  # tools rest on their environment
                 if "spec" in nd:
                     self.spec_payload[i] = dict(kind=nd["kind"], content=nd["spec"])
-                    self.spec_deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", []) if "spec" in a["nodes"][x]})
+                    self.spec_deps[i] = sorted({a["prefix"] + x for x in nd.get("spec_deps", [])})
             for n, c in self.claims.items():
                 for ref in c.get(name, []):
                     if ref not in a["nodes"]:
@@ -803,11 +797,17 @@ class Ledger:
                     self.errors.append(f"paper {name}: author key {a!r} not in keys")
         self.stmt = {}
         for n, c in self.claims.items():
-            c["lean"] = self.expand_lean(c.get("lean", []))
             self.stmt[n] = self.statement(n, c)
-        # hypotheses the in-scope results are proved given (assumption constants found in their statements)
-        self.scope_hyps = sorted({a for c in self.claims.values() for x in c["lean"] if x in self.decls
-                                  for a in self.decls[x].get("assumptions", [])})
+        # hypotheses the in-scope results are proved given: `hyp:` register items of the adapter nodes claims refer to
+        self.scope_hyps = sorted({x[4:] for c in self.claims.values() for name, a in self.adapters.items()
+                                  for ref in c.get(name, []) for x in a["nodes"].get(ref, {}).get("register", [])
+                                  if x.startswith("hyp:")})
+        self.hyp_node = {}  # the node that states a hypothesis, if an adapter has one (Lean: its definition)
+        for h in self.scope_hyps:
+            for a in self.adapters.values():
+                if h in a["nodes"]:
+                    self.hyp_node[h] = a["prefix"] + h
+                    break
         self.hstmt = {}
         for h in self.scope_hyps:
             meta = self.hypotheses.get(h, {})
@@ -816,19 +816,13 @@ class Ledger:
                 name=h, label=meta.get("label", ""), text=self.hstmt[h][0], source=self.hstmt[h][1],
                 cites=sorted(meta.get("cites", [])), note=meta.get("note", "")))
             deps["hyp:" + h] = sorted(["cite:" + x for x in meta.get("cites", []) if x in self.citations]
-                                      + (["lean:" + h] if h in self.decls else []))
+                                      + ([self.hyp_node[h]] if h in self.hyp_node else []))
             for x in meta.get("cites", []):
                 if x not in self.citations:
                     self.errors.append(f"hypothesis {h}: unknown citation {x}")
         for n, c in self.claims.items():
             i = "claim:" + n
-            d = []
-            for x in c.get("lean", []):
-                if x in self.decls:
-                    d.append("lean:" + x)
-                else:
-                    self.errors.append(f"claim {n}: Lean declaration {x} not in dump")
-            d += ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
+            d = ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
             d += [i for i in self.adapter_ids(c) if i in payload]
             for x in c.get("cites", []):
                 if x in self.citations:
@@ -892,13 +886,11 @@ class Ledger:
         cp, cd = {}, {}
         for n, c in self.claims.items():
             cp[n] = dict(text=self.stmt[n][0],
-                         lean=[[x, self.spec.get("lean:" + x, "")] for x in sorted(c.get("lean", []))],
-                         others=[[i, self.spec[i] if i in self.spec_payload else self.full[i]]
-                                 for i in sorted(deps["claim:" + n])
-                                 if not i.startswith(("lean:", "claim:", "reading:", "assess:"))])
+                         evidence=[[i, self.spec[i] if i in self.spec else self.full[i]] for i in sorted(deps["claim:" + n])
+                                   if payload.get(i, {}).get("kind") not in ("claim", "reading", "assessment")])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
-        self.hspec = {h: H("hyp-spec", dict(text=self.hstmt[h][0], lean=self.spec.get("lean:" + h, ""),
+        self.hspec = {h: H("hyp-spec", dict(text=self.hstmt[h][0], stated=self.spec.get(self.hyp_node.get(h), ""),
                                            cites=[[x, self.full["cite:" + x]] for x in sorted(self.hypotheses.get(h, {}).get("cites", []))
                                                   if "cite:" + x in self.full]))
                       for h in self.scope_hyps}
@@ -925,19 +917,11 @@ class Ledger:
         own = {}
         for n, c in self.claims.items():
             r = set()
-            for x in c.get("lean", []):
-                d = self.decls.get(x)
-                if not d:
-                    continue
-                r |= {"axiom:" + a for a in d.get("axioms", []) if a not in STANDARD_AXIOMS and a != "sorryAx"}
-                if d.get("sorry") or "sorryAx" in d.get("axioms", []):
-                    r.add("sorry:" + x)
-                r |= {"hyp:" + a for a in d.get("assumptions", [])}
             r |= {"hyp:cited:" + x for x in c.get("cites", [])}
             for name, a in self.adapters.items():
                 r |= {x for ref in c.get(name, []) for x in a["nodes"].get(ref, {}).get("register", [])}
             r |= {"assertion:" + a for a, v in self.assertions.items() if v["claim"] == n}
-            if not c.get("lean") and not c.get("files") and not any(c.get(name) for name in self.adapters):
+            if not c.get("files") and not any(c.get(name) for name in self.adapters):
                 r.add("evidence:none")
             own[n] = r
         self.own_register = own
@@ -953,19 +937,8 @@ class Ledger:
 
     # -------------------------------------------------------- derived views
     def lean_status(self, n):
-        c = self.claims[n]
-        if not c.get("lean"):
-            return "-"
-        ds = [self.decls.get(x) for x in c["lean"]]
-        if any(d is None for d in ds):
-            return "missing"
-        if any(d.get("sorry") for d in ds):
-            return "sorry"
-        if any(set(d.get("axioms", [])) - STANDARD_AXIOMS for d in ds):
-            return "axioms"
-        if any(d.get("assumptions") for d in ds):
-            return "assumes"
-        return "ok"
+        """'ok', 'assumes', 'axioms', 'sorry', 'missing' or '-': the words adapters/lean.py gives its nodes."""
+        return self.adapter_status("lean", n)
 
     def adapter_ids(self, c):
         """Node ids of the adapter references of claim c."""
@@ -980,7 +953,9 @@ class Ledger:
         nodes = [a["nodes"].get(r) for r in refs]
         if any(x is None for x in nodes):
             return "missing"
-        worst = max(nodes, key=lambda x: ADAPTER_STATUS.index(x["status"]))
+        rank = lambda x: (ADAPTER_STATUS.index(x["status"]),
+                          a["words"].index(x["word"]) if x.get("word") in a["words"] else -1)
+        worst = max(nodes, key=rank)  # equal status: the later of the dump's `words` (best to worst)
         return worst.get("word", worst["status"])
 
     def proverif_status(self, n):
@@ -1011,15 +986,15 @@ class Ledger:
                 m.setdefault(lab, []).append(n)
         return {lab: sorted(ns) for lab, ns in m.items() if len(ns) > 1}
 
-    def lean_closure(self, names):
-        """Declarations the given ones rest on (statements and proofs), transitively, within the dump."""
-        seen, todo = set(), list(names)
+    def closure(self, ids):
+        """Adapter nodes the given ones rest on (in Lean: statements and proofs), transitively."""
+        seen, todo = set(), list(ids)
         while todo:
             x = todo.pop()
-            if x in seen or x not in self.decls:
+            if x in seen or x not in self.deps or x == self.env:
                 continue
             seen.add(x)
-            todo += self.decls[x].get("proof_deps", []) + self.decls[x].get("stmt_deps", [])
+            todo += self.deps[x]
         return seen
 
     def register_origin(self, n, item):
@@ -1036,15 +1011,16 @@ class Ledger:
         return None
 
     def used_in(self, n):
-        """Claims whose Lean declarations use one of claim n's in their proofs: {claim: [declarations]}.
-        Claim n is then a step of those claims."""
-        own = set(self.claims[n].get("lean", []))
+        """Claims whose adapter nodes rest on one of claim n's (in Lean: use it in their proofs):
+        {claim: [references]}. Claim n is then a step of those claims."""
+        own = set(self.adapter_ids(self.claims[n]))
+        ref = {a["prefix"] + r: r for a in self.adapters.values() for r in a["nodes"]}
         out = {}
         for m, c in self.claims.items():
-            theirs = set(c.get("lean", []))
+            theirs = set(self.adapter_ids(c))
             if m == n or not theirs:
                 continue
-            hit = sorted(own & (self.lean_closure(theirs) - theirs))
+            hit = sorted(ref[i] for i in own & (self.closure(theirs) - theirs))
             if hit:
                 out[m] = hit
         return out
@@ -1070,7 +1046,7 @@ class Ledger:
         return latest.get("_sig", "unsigned") if latest else "unsigned"
 
     def lock(self):
-        return dict(format=FORMAT_VERSION, tool=__version__, root=self.root_hash, toolchain=self.toolchain,
+        return dict(format=FORMAT_VERSION, tool=__version__, root=self.root_hash,
                     nodes={i: dict(kind=p["kind"], full=self.full[i]) for i, p in sorted(self.payload.items())},
                     claims={n: dict(spec=self.cspec[n], register=self.register[n]) for n in sorted(self.claims)},
                     hypotheses={h: dict(spec=self.hspec[h]) for h in self.scope_hyps})
@@ -1640,6 +1616,39 @@ def cmd_addkey(L, args):
     return 0
 
 
+def cmd_migrate(L, args):
+    """Rebind unsigned attestations from the statement hashes of an older format (FORMAT.md 6). The old lock file
+    must have been current (old `verify` OK) when the dumps and ledger.toml were converted."""
+    old = json.loads(Path(args.old_lock).read_text())
+    if old.get("format") not in (0, "0.1.0"):
+        sys.exit(f"{args.old_lock}: format {old.get('format')!r}; migrate reads lock files of format 0.1.0")
+    pairs = [(old["claims"].get(n, {}).get("spec"), L.cspec[n]) for n in L.claims]
+    pairs += [(old.get("hypotheses", {}).get(h, {}).get("spec"), L.hspec[h]) for h in L.scope_hyps]
+    new = {}
+    for o, n in pairs:
+        if o and new.setdefault(o, n) != n:
+            sys.exit(f"old statement hash {o[:12]} maps to two new ones; rebind by hand")
+    rebound, signed = 0, []
+    for f in sorted(L.dir.glob("*.toml")):
+        blocks = re.split(r"(?m)^(?=\[)", f.read_text())
+        out = []
+        for b in blocks:
+            m = re.search(r'(?m)^bound = "([0-9a-f]{64})"$', b)
+            if b.startswith("[[attestation]]") and m and m.group(1) in new:
+                if re.search(r"(?m)^sig = ", b):
+                    signed.append(re.search(r'(?m)^(?:claim|hypothesis) = "(.*)"$', b).group(1))
+                else:
+                    b = b.replace(m.group(0), f'bound = "{new[m.group(1)]}"'); rebound += 1
+            out.append(b)
+        if "".join(out) != f.read_text():
+            f.write_text("".join(out))
+    print(f"rebound {rebound} attestation(s) to format {FORMAT_VERSION} statement hashes")
+    for x in signed:
+        print(f"signed attestation on {x} not rebound: the signature covers the old binding; ask the signer to attest again")
+    print(f"now run `ledger.py{' -P ' + L.paper if L.paper else ''} lock`")
+    return 0
+
+
 def cmd_verify_attestation(L, args):
     """Check a standalone attestation file against a lock file (hash only; no ledger sources needed)."""
     t = tomllib.loads(Path(args.file).read_text())
@@ -1667,19 +1676,9 @@ def cmd_verify_attestation(L, args):
 
 
 def cmd_extract(L, args):
-    lc, ac = L.cfg.get("lean", {}), {k: v for k, v in L.cfg.get("adapter", {}).items() if v.get("extract")}
-    if lc.get("extract"):
-        names = sorted({x for c in L.claims.values() for x in c.get("lean", [])})
-        out = subprocess.run(lc["extract"], shell=True, cwd=L.root, input="\n".join(names), text=True, capture_output=True)
-        sys.stderr.write(out.stderr[-3000:])
-        if out.returncode:
-            return out.returncode
-        dump = json.loads(out.stdout)  # must be valid JSON
-        L.root = Path(args.dir).resolve()
-        dump["env_hash"] = L.env_hash()  # lets later runs notice that the sources moved on
-        (L.dir / lc.get("dump", "lean.json")).write_text(json.dumps(dump, separators=(",", ":")))
-    elif not ac:
-        sys.exit("no extract command configured ([lean] or [adapter.NAME])")
+    ac = {k: v for k, v in L.cfg.get("adapter", {}).items() if v.get("extract")}
+    if not ac:
+        sys.exit("no extract command configured ([adapter.NAME] extract = ...)")
     for name, cfg in ac.items():  # stdin: every reference the claims make into this adapter; stdout: its dump
         refs = sorted({r for c in L.claims.values() for r in c.get(name, [])})
         out = subprocess.run(cfg["extract"], shell=True, cwd=L.root, input="\n".join(refs), text=True, capture_output=True)
@@ -1690,6 +1689,7 @@ def cmd_extract(L, args):
         problems = check_dump(dump)
         if problems:
             sys.exit(f"adapter {name}: the extractor wrote an invalid dump:\n  " + "\n  ".join(problems[:20]))
+        dump["env_hash"] = L.env_hash()  # lets later runs notice that the sources moved on
         (L.dir / cfg.get("dump", name + ".json")).write_text(json.dumps(dump, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
     return 0
 
@@ -1720,6 +1720,8 @@ def main(argv=None):
     p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
     p.add_argument("--url"); p.add_argument("--vouched-by")
     p = sub.add_parser("verify-attestation"); p.add_argument("file"); p.add_argument("--lock", required=True)
+    p = sub.add_parser("migrate", help="rebind attestations after a format change, from the old lock file")
+    p.add_argument("--old-lock", required=True, help="lock file written by the previous format, current when converting")
     args = ap.parse_args(argv)
     if args.cmd in ("extract", "verify-attestation", "addkey"):  # no ledger build needed (the dump may not exist yet)
         L = Ledger.__new__(Ledger)

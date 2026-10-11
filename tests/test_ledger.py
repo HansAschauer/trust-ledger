@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import ledger as lg
+sys.path.insert(0, str(ROOT / "adapters"))
+import lean as lean_adapter
 
 TOY = ROOT / "examples" / "toy"
 
@@ -19,8 +21,10 @@ class Toy(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def edit_dump(self, fn):
-        f = self.p / "ledger" / "lean.json"
-        d = json.loads(f.read_text()); fn(d["decls"]); f.write_text(json.dumps(d))
+        """Change the Dump.lean output and convert it, as `extract` would."""
+        raw = self.p / "ledger" / "lean-dump.json"
+        d = json.loads(raw.read_text()); fn(d["decls"]); raw.write_text(json.dumps(d))
+        (self.p / "ledger" / "lean.json").write_text(json.dumps(lean_adapter.convert(d)))
 
     def L(self):
         return lg.Ledger(self.p)
@@ -63,11 +67,10 @@ class Toy(unittest.TestCase):
         f = self.p / "ledger" / "lock.json"
         lock = json.loads(f.read_text())
         self.assertEqual((lock["format"], lock["tool"]), (lg.FORMAT_VERSION, lg.__version__))
-        f.write_text(json.dumps(dict(lock, format=0)))                # written before versioning: same hashing
-        self.assertEqual(lg.main(["-C", str(self.p), "verify"]), 0)
-        f.write_text(json.dumps(dict(lock, format="9.0.0")))
-        with self.assertRaises(SystemExit):
-            lg.main(["-C", str(self.p), "verify"])
+        for old in (0, "0.1.0", "9.0.0"):                             # older formats hash differently: migrate
+            f.write_text(json.dumps(dict(lock, format=old)))
+            with self.assertRaises(SystemExit):
+                lg.main(["-C", str(self.p), "verify"])
 
     def test_register_propagates(self):
         r = self.L().register
@@ -552,7 +555,8 @@ class Adapters(unittest.TestCase):
         fake.write_text(f"print({PROVERIF_OUTPUT!r})\n")
         f = self.p / "ledger" / "ledger.toml"
         f.write_text(f.read_text().replace('# extract = "python3 ../../adapters/proverif.py"',
-                                           f'extract = "{sys.executable} {ROOT / "adapters" / "proverif.py"}"'))
+                                           f'extract = "{sys.executable} {ROOT / "adapters" / "proverif.py"}"')
+                     .replace("python3 ../../adapters/lean.py", f"{sys.executable} {ROOT / 'adapters' / 'lean.py'}"))
         old = os.environ.get("PROVERIF")
         os.environ["PROVERIF"] = f"{sys.executable} {fake}"
         try:
@@ -575,7 +579,7 @@ class Adapters(unittest.TestCase):
         self.assertEqual(L.errors, [])
         self.assertEqual(L.adapter_status("lab", "measured"), "unchecked")
         self.assertIn("manual:calibration", L.register["measured"])
-        self.assertEqual(L.deps["lab:fit"], ["lab:raw"])
+        self.assertEqual(L.deps["lab:fit"], ["env:toy", "lab:raw"])          # tools rest on their environment
         self.assertEqual(L.payload["lab:fit"]["provenance"], "computed")
 
     def test_attestation_binds_to_the_adapter_spec(self):
@@ -618,6 +622,48 @@ class Adapters(unittest.TestCase):
         d["nodes"]["fit"]["kind"] = "claim"
         (self.p / "ledger" / "lab.json").write_text(json.dumps(d))
         self.assertTrue(any("core kinds" in e for e in self.L().errors))
+
+    def test_lean_adapter_mapping(self):
+        d = json.loads((self.p / "ledger" / "lean-dump.json").read_text())
+        nodes = lean_adapter.convert(d)["nodes"]
+        thm = nodes["Toy.thm"]
+        self.assertEqual((thm["status"], thm["word"], thm["register"]), ("conditional", "assumes", ["hyp:Toy.BanachProp"]))
+        self.assertEqual((thm["deps"], thm["spec_deps"]), (["Toy.f", "Toy.lem"], ["Toy.f"]))  # the proof is not the statement
+        self.assertNotIn("proof", thm["spec"]); self.assertIn("proof", thm["content"])
+        self.assertTrue(thm["result"]); self.assertFalse(nodes["Toy.f"]["result"])
+        d["decls"]["Toy.lem"].update(axioms=["propext", "sorryAx"], sorry=True)
+        d["decls"]["Toy.thm"]["axioms"].append("Toy.myAxiom")
+        nodes = lean_adapter.convert(d)["nodes"]
+        self.assertEqual(nodes["Toy.lem"]["register"], ["sorry:Toy.lem"])
+        self.assertIn("axiom:Toy.myAxiom", nodes["Toy.thm"]["register"])
+        (self.p / "ledger" / "lean.json").write_text(json.dumps(lean_adapter.convert(d)))
+        self.add("claims.toml", '\n[claim.both]\ntext = "x"\nlean = ["Toy.thm", "Toy.lem"]\n')
+        self.assertEqual(self.L().lean_status("both"), "sorry")              # sorry is worse than axioms
+        del d["decls"]["Toy.lem"]["proof"]
+        with self.assertRaises(SystemExit):                                   # a theorem without proof term
+            lean_adapter.convert(d)
+
+    def test_wildcard_expands_to_results_only(self):
+        self.add("claims.toml", '\n[claim.all]\ntext = "x"\nlean = ["Toy.*"]\n')
+        self.assertEqual(self.L().claims["all"]["lean"], ["Toy.lem", "Toy.thm"])   # not the definition Toy.f
+
+    def test_migrate_rebinds_unsigned_attestations(self):
+        lg.main(["-C", str(self.p), "attest", "thm-twice", "--person", "X", "--level", "green"])
+        lg.main(["-C", str(self.p), "attest", "lem-succ", "--person", "Y", "--level", "green"])
+        L = self.L()
+        new_thm, new_lem, old_thm, old_lem = L.cspec["thm-twice"], L.cspec["lem-succ"], "a" * 64, "b" * 64
+        f = self.p / "ledger" / "attestations.toml"
+        t = f.read_text().replace(new_thm, old_thm).replace(new_lem, old_lem)
+        f.write_text(t.replace('person = "Y"', 'person = "Y"\nsig = "pretend"'))     # Y's attestation is signed
+        old = self.tmp / "old-lock.json"
+        old.write_text(json.dumps(dict(format="0.1.0", claims={"thm-twice": dict(spec=old_thm), "lem-succ": dict(spec=old_lem)})))
+        self.assertFalse(self.L().attestation_state("thm-twice")[0][3])
+        import io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            lg.main(["-C", str(self.p), "migrate", "--old-lock", str(old)])
+        self.assertTrue(self.L().attestation_state("thm-twice")[0][3])
+        self.assertIn(old_lem, f.read_text())                                # a signature covers the old binding
+        self.assertIn("signed attestation on lem-succ not rebound", out.getvalue())
 
     def test_old_proverif_section_is_an_error(self):
         self.add("ledger.toml", '\n[proverif]\ndump = "proverif.json"\n')

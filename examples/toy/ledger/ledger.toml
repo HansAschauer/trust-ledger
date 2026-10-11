@@ -1,9 +1,11 @@
 [project]
 name = "toy"
 
-[lean]
-dump = "lean.json"          # produced by the Lean extractor; hand-made here
-# extract = "./run.sh dump"  # reads declaration names on stdin, prints the JSON dump
+[adapter.lean]
+prefix = "lean:"             # claims list declaration names under `lean`
+dump = "lean.json"           # adapter dump (docs/FORMAT.md 2.6), converted from the hand-made Dump.lean output:
+extract = "python3 ../../adapters/lean.py --from ledger/lean-dump.json"
+# in a real project: extract = "ledger/dump.sh | python3 adapters/lean.py"  (names on stdin -> Dump.lean -> adapter)
 
 [adapter.proverif]
 prefix = "pv:"               # node ids are pv:<reference>; claims list references under `proverif`

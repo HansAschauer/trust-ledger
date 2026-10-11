@@ -24,9 +24,9 @@ field-specific tools during `status`, `lock` or `verify`; those read dumps and f
 
 | varies by field | mechanism | state |
 |---|---|---|
-| extracting evidence from tools | adapter dumps (`FORMAT.md` 2.6), written by any program | done; ProVerif uses it, Lean still has its own dump |
+| extracting evidence from tools | adapter dumps (`FORMAT.md` 2.6), written by any program | done; Lean and ProVerif use it |
 | which part is statement, which evidence | the adapter's `spec` per node kind | done |
-| open items a field cares about | the adapter's `register` items | done |
+| open items a field cares about | the adapter's `register` items (`hyp:` makes a hypothesis) | done |
 | status words shown per claim | the adapter's `status` and `word` | done; table columns still fixed (Lean, ProVerif) |
 | data, steps, checks (no tool of its own) | built-in kinds `source`, `step`, `check` | planned |
 | evidence vocabulary (E1 to E5 for mathematics) | a table in `ledger.toml`, E1 to E5 as default | planned |
@@ -44,11 +44,13 @@ anything that the core recomputes.
 2. Decide, per node kind, what goes into `content` (everything that should make the root change) and
    what goes into `spec` (only what should reset attestations when it changes). If in doubt, leave
    `spec` out: then every change resets attestations, which is the safe default.
-3. Map the tool's outcome to `status` (`ok`, `open`, `failed`) and a short `word` for the table.
+3. Map the tool's outcome to `status` (`ok`, `conditional` = holds given hypotheses, `open`, `failed`) and a
+   short `word` for the table.
 4. Emit `register` items for what the tool cannot check (the faithfulness of a model, a manual step, a
    deviation from a preregistration).
 5. Read references on stdin, write the dump on stdout, exit non-zero on failure. Configure it as
-   `[adapter.NAME] extract = "..."`. `adapters/proverif.py` is a complete example in about 70 lines.
+   `[adapter.NAME] extract = "..."`. `adapters/proverif.py` is a complete example in about 70 lines;
+   `adapters/lean.py` shows a converter that sits behind a tool's own exporter (`Dump.lean`).
 
 ## `verify` and `reproduce`
 

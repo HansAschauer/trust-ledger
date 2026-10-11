@@ -22,7 +22,8 @@ files + `ledgercheck.sty`, tested by compiling a real paper), and the environmen
 
 1. Generic adapter dump in `FORMAT.md` 2.6. **Done.**
 2. ProVerif on the adapter dump (`adapters/proverif.py`); hashes of existing ledgers unchanged. **Done.**
-3. Lean on the adapter dump (`Dump.lean` writes it, or a thin converter); hashes unchanged if possible.
+3. Lean on the adapter dump (`adapters/lean.py` converts the `Dump.lean` output). **Done**, as format 0.2.0:
+   the hashes changed once (no Lean-specific rule left in the core); `migrate` rebinds attestations.
 4. Built-in kinds `source` (external data pinned by hash, URL/DOI, retrieval date), `step` (inputs to
    outputs, a command or a manual step with a person; manual steps enter the register) and `check` (a
    command whose recorded result supports a claim). Salted hashes (commitments) for data that must not be

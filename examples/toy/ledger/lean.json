@@ -1,10 +1,114 @@
-{"toolchain": "leanprover/lean4:v4.34.1",
- "decls": {
-  "Toy.f":  {"kind": "def", "type": "Nat → Nat", "value": "fun n => n + 1", "axioms": [], "sorry": false,
-             "stmt_deps": [], "proof_deps": [], "assumptions": []},
-  "Toy.lem": {"kind": "theorem", "type": "∀ n, Toy.f n > n", "proof": "fun n => Nat.lt_succ_self n",
-             "axioms": ["propext"], "sorry": false, "stmt_deps": ["Toy.f"], "proof_deps": [], "assumptions": []},
-  "Toy.thm": {"kind": "theorem", "type": "Toy.BanachProp → ∀ n, Toy.f (Toy.f n) > n", "proof": "fun h n => lem_trans h n",
-             "axioms": ["propext", "Classical.choice"], "sorry": false, "stmt_deps": ["Toy.f"], "proof_deps": ["Toy.lem"],
-             "assumptions": ["Toy.BanachProp"]}
- }}
+{
+ "adapter": "lean",
+ "environment": {
+  "toolchain": "leanprover/lean4:v4.34.1"
+ },
+ "nodes": {
+  "Toy.f": {
+   "content": {
+    "assumptions": [],
+    "axioms": [],
+    "kind": "def",
+    "name": "Toy.f",
+    "sorry": false,
+    "type": "Nat → Nat",
+    "value": "fun n => n + 1"
+   },
+   "deps": [],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": false,
+   "spec": {
+    "kind": "def",
+    "name": "Toy.f",
+    "type": "Nat → Nat",
+    "type_term": "",
+    "value": "fun n => n + 1",
+    "value_term": ""
+   },
+   "spec_deps": [],
+   "status": "ok",
+   "word": "ok"
+  },
+  "Toy.lem": {
+   "content": {
+    "assumptions": [],
+    "axioms": [
+     "propext"
+    ],
+    "kind": "theorem",
+    "name": "Toy.lem",
+    "proof": "fun n => Nat.lt_succ_self n",
+    "sorry": false,
+    "type": "∀ n, Toy.f n > n"
+   },
+   "deps": [
+    "Toy.f"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": true,
+   "spec": {
+    "kind": "theorem",
+    "name": "Toy.lem",
+    "type": "∀ n, Toy.f n > n",
+    "type_term": "",
+    "value": "",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Toy.f"
+   ],
+   "status": "ok",
+   "word": "ok"
+  },
+  "Toy.thm": {
+   "content": {
+    "assumptions": [
+     "Toy.BanachProp"
+    ],
+    "axioms": [
+     "propext",
+     "Classical.choice"
+    ],
+    "kind": "theorem",
+    "name": "Toy.thm",
+    "proof": "fun h n => lem_trans h n",
+    "sorry": false,
+    "type": "Toy.BanachProp → ∀ n, Toy.f (Toy.f n) > n"
+   },
+   "deps": [
+    "Toy.f",
+    "Toy.lem"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [
+    "hyp:Toy.BanachProp"
+   ],
+   "result": true,
+   "spec": {
+    "kind": "theorem",
+    "name": "Toy.thm",
+    "type": "Toy.BanachProp → ∀ n, Toy.f (Toy.f n) > n",
+    "type_term": "",
+    "value": "",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Toy.f"
+   ],
+   "status": "conditional",
+   "word": "assumes"
+  }
+ },
+ "version": "0.2.0",
+ "words": [
+  "ok",
+  "assumes",
+  "axioms",
+  "sorry"
+ ]
+}
