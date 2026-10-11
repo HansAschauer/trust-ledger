@@ -251,8 +251,9 @@ path may name a directory, whose digest is `H("tree", {relative path: sha256})` 
     data and the salt can check the commitment; without the salt it reveals nothing about the data.
 * `[step.<name>]`: `inputs` (`source:<name>` or paths), `outputs` (paths), exactly one of `command` (how to
   produce the outputs) and `manual` (what a person did, with `person`), optional `code` (paths of scripts or
-  project files that define the step) and `note`. A node `step:<name>` of kind `step` (asserted), content
-  `{name, command | manual, person, note, outputs, code: {path: digest}}`, deps: its inputs and the
+  project files that define the step), `note`, and `compare` (`bytes`, the default, or `none` for outputs
+  that differ from run to run, such as rendered images with timestamps). A node `step:<name>` of kind `step` (asserted), content
+  `{name, command | manual, person, note, compare, outputs, code: {path: digest}}` (absent fields omitted), deps: its inputs and the
   environment node. A `file:` node of an output depends on the step that produces it; a path may be the
   output of one step only. So a claim on a figure rests on the figure's file, the step that made it, that
   step's inputs, and so on down to the sources.
@@ -267,8 +268,13 @@ path may name a directory, whose digest is `H("tree", {relative path: sha256})` 
   that rests only on checks (the attestation says *this check tests what the claim says*), while a changed
   check does.
 
-The ledger records the chain; it does not re-run steps. Whether the outputs are what the commands produce
-from the inputs is checked by re-running them (planned: `reproduce`).
+The ledger records the chain; `verify` does not re-run steps. Whether the outputs are what the commands
+produce from the inputs is checked by `ledger.py reproduce`: it copies the project to a scratch directory
+(without `[reproduce] ignore`, default `.git`, `__pycache__`, `.lake`, `node_modules`), runs the command
+steps in dependency order there, after deleting their outputs, and compares each output with the one in the
+project (unless `compare = "none"`). Manual steps and steps whose inputs are not available (private data)
+are reported, not run. It exits non-zero if an output differs, is not produced, or a command fails; it
+changes nothing in the project and records nothing in the ledger.
 
 ### 3.5 Evidence types and checklists (in `ledger.toml`)
 

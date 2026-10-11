@@ -64,6 +64,7 @@ python3 ledger.py -P NAME verify-attestation me.att.toml --lock ledger/lock-NAME
 python3 ledger.py attest --hypothesis NAME --person NAME --level green   # "this hypothesis is a known theorem"
 python3 ledger.py extract           # run the extractors of all adapters, write their dumps
 python3 ledger.py check             # run the [check.NAME] commands, record their results
+python3 ledger.py reproduce         # re-run the command steps in a scratch copy, compare their outputs
 python3 ledger.py commitment PATH --salt-file FILE   # salted commitment for data that stays private
 python3 ledger.py lock              # write lock.json, print the root
 python3 ledger.py verify            # recompute, compare with lock.json

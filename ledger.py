@@ -10,6 +10,7 @@ Version 0.2.0 (alpha), ledger format 0.2.0.
   ledger.py [-C DIR] verify              recompute and compare with lock.json; exit 1 on any difference
   ledger.py [-C DIR] attest CLAIM --person P --level green|yellow|conjecture [--reason R] [--checklist A1,A2]
   ledger.py [-C DIR] extract             run the extractors of the configured adapters (writes their dumps)
+  ledger.py [-C DIR] reproduce [STEP...]  re-run command steps in a scratch copy, compare their outputs
   ledger.py [-C DIR] check               run the [check.NAME] commands, record their results (ledger/checks.json)
   ledger.py [-C DIR] commitment PATH --salt-file F   salted commitment to data that stays private
   ledger.py [-C DIR] migrate --old-lock F            rebind attestations after a format change
@@ -615,6 +616,8 @@ class Ledger:
                 self.errors.append(f"step {n}: needs exactly one of `command` and `manual`")
             elif st.get("manual") and not st.get("person"):
                 self.errors.append(f"step {n}: a manual step needs the `person` who did it")
+            if st.get("compare", "bytes") not in ("bytes", "none"):
+                self.errors.append(f"step {n}: compare is `bytes` (default) or `none` (outputs differ from run to run)")
         for n, ch in self.checks.items():
             if not ch.get("command"):
                 self.errors.append(f"check {n}: needs a `command`")
@@ -1044,7 +1047,7 @@ class Ledger:
         for n, st in self.steps.items():
             i = "step:" + n
             payload[i] = dict(kind="step", provenance="asserted", content=dict(
-                {k: st[k] for k in ("command", "manual", "person", "note") if k in st},
+                {k: st[k] for k in ("command", "manual", "person", "note", "compare") if k in st},
                 name=n, outputs=sorted(st.get("outputs", [])), code=self.code_hashes(st)))
             d = [env]
             for x in st.get("inputs", []):
@@ -1848,6 +1851,70 @@ def cmd_check(L, args):
     return 0
 
 
+def step_order(steps, producer):
+    """Steps in an order where every step comes after the steps that produce its inputs."""
+    after = {n: {producer[x] for x in st.get("inputs", []) if x in producer} - {n} for n, st in steps.items()}
+    order = []
+    while after:
+        ready = sorted(n for n, d in after.items() if not d)
+        if not ready:
+            sys.exit(f"steps depend on each other in a cycle: {', '.join(sorted(after))}")
+        order += ready
+        after = {n: d - set(ready) for n, d in after.items() if n not in ready}
+    return order
+
+
+def cmd_reproduce(L, args):
+    """Re-run the command steps in a scratch copy of the project and compare their outputs with the ones in it."""
+    if not L.steps:
+        sys.exit("no [step.NAME] tables in ledger/")
+    unknown = set(args.steps) - set(L.steps)
+    if unknown:
+        sys.exit(f"unknown step(s): {', '.join(sorted(unknown))}")
+    ignore = L.cfg.get("reproduce", {}).get("ignore", [".git", "__pycache__", ".lake", "node_modules"])
+    tmp = Path(tempfile.mkdtemp(prefix="ledger-reproduce-"))
+    bad = 0
+    try:
+        work = tmp / "p"
+        shutil.copytree(L.root, work, symlinks=True, ignore=shutil.ignore_patterns(*ignore))
+        for n in step_order(L.steps, L.producer):
+            st = L.steps[n]
+            if args.steps and n not in args.steps:
+                continue
+            if st.get("manual"):
+                print(f"step {n}: manual ({st.get('person', '?')}), not re-run; its outputs are taken as given")
+                continue
+            paths = [L.sources[x[7:]].get("path") if x.startswith("source:") else x for x in st.get("inputs", [])]
+            absent = [x for x, q in zip(st.get("inputs", []), paths) if not q or not (work / q).exists()]
+            if absent:
+                print(f"step {n}: inputs not available here ({', '.join(absent)}), not re-run")
+                continue
+            for out in st.get("outputs", []):  # a command that does nothing must not pass
+                q = work / out
+                shutil.rmtree(q) if q.is_dir() else q.unlink(missing_ok=True)
+            run = subprocess.run(st["command"], shell=True, cwd=work, text=True, capture_output=True)
+            if run.returncode:
+                bad += 1
+                print(f"step {n}: FAILED (exit {run.returncode})\n" + (run.stderr or run.stdout)[-1500:])
+                continue
+            res = []
+            for out in st.get("outputs", []):
+                q = work / out
+                if not q.exists():
+                    res.append(f"{out} NOT PRODUCED"); bad += 1
+                elif st.get("compare", "bytes") == "none":
+                    res.append(f"{out} produced (not compared: compare = none)")
+                elif not (L.root / out).exists() or digest(q) != digest(L.root / out):
+                    res.append(f"{out} DIFFERS from the one in the project"); bad += 1
+                else:
+                    res.append(f"{out} identical")
+            print(f"step {n}: " + "; ".join(res))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("reproduced" if not bad else f"{bad} problem(s): the outputs in the project are not what the steps produce")
+    return 1 if bad else 0
+
+
 def cmd_commitment(L, args):
     """Print the salted commitment to a file or directory, creating the salt file if it does not exist.
     Paths are relative to the project root (-C), like everywhere in the ledger."""
@@ -1968,6 +2035,8 @@ def main(argv=None):
     p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
     p.add_argument("--url"); p.add_argument("--vouched-by")
     p = sub.add_parser("verify-attestation"); p.add_argument("file"); p.add_argument("--lock", required=True)
+    p = sub.add_parser("reproduce", help="re-run the command steps in a scratch copy, compare their outputs")
+    p.add_argument("steps", nargs="*", help="only these steps (default: all, in dependency order)")
     sub.add_parser("check", help="run the [check.NAME] commands, record their results (ledger/checks.json)")
     p = sub.add_parser("commitment", help="salted commitment to data that is not published (FORMAT.md 3.4)")
     p.add_argument("path"); p.add_argument("--salt-file", required=True, help="created with a random salt if missing")

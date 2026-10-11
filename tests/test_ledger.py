@@ -830,6 +830,38 @@ class Lab(unittest.TestCase):
         self.assertIn("step calibrate: a manual step needs the `person`", errs)
         self.assertIn("results/g.json is an output of two steps", errs)
 
+    def test_reproduce(self):
+        rc, out = self.run_main("reproduce")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("step calibrate: manual", out)
+        self.assertIn("results/g.json identical", out)
+        self.assertEqual(lg.digest(self.p / "results" / "g.json"), lg.digest(LAB / "results" / "g.json"))  # project untouched
+
+    def test_reproduce_notices_outputs_that_are_not_what_the_steps_produce(self):
+        self.edit("data/raw.csv", lambda t: t.replace("1.2", "1.3", 1))      # new data, the fit was not re-run
+        rc, out = self.run_main("reproduce")
+        self.assertEqual(rc, 1)
+        self.assertIn("results/g.json DIFFERS", out)
+        self.edit("ledger/data.toml", lambda t: t.replace('command = "python3 scripts/fit.py"', 'command = "true"'))
+        rc, out = self.run_main("reproduce", "fit")
+        self.assertEqual(rc, 1)
+        self.assertIn("results/g.json NOT PRODUCED", out)                     # old outputs do not count
+
+    def test_reproduce_compare_none_and_unknown_step(self):
+        self.edit("data/raw.csv", lambda t: t.replace("1.2", "1.3", 1))
+        self.edit("ledger/data.toml", lambda t: t.replace('outputs = ["results/g.json"]', 'outputs = ["results/g.json"]\ncompare = "none"'))
+        rc, out = self.run_main("reproduce")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("not compared", out)
+        with self.assertRaises(SystemExit):
+            self.run_main("reproduce", "nonesuch")
+
+    def test_step_order(self):
+        steps = {"b": dict(inputs=["x"]), "a": dict(inputs=["raw"]), "c": dict(inputs=["y", "x"])}
+        self.assertEqual(lg.step_order(steps, {"x": "a", "y": "b"}), ["a", "b", "c"])
+        with self.assertRaises(SystemExit):
+            lg.step_order({"a": dict(inputs=["y"]), "b": dict(inputs=["x"])}, {"x": "a", "y": "b"})
+
     def test_unknown_source_and_missing_data(self):
         self.edit("ledger/claims.toml", lambda t: t + '\n[claim.x]\ntext = "x"\nsources = ["nowhere"]\n')
         self.edit("ledger/data.toml", lambda t: t + '\n[source.gone]\npath = "data/gone.csv"\n')
