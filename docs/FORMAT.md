@@ -15,7 +15,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | `lean-decl`, `proverif-query`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `reading`, `assessment`, `environment` |
+| `kind`       | core: `lean-decl`, `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `reading`, `assessment`, `environment`; adapters add their own (section 2.6) |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -70,16 +70,6 @@ every claim that `uses` it.
 `value_term`, `proof_term`, axioms, sorry, assumptions. A theorem without a proof term is an
 error, not an empty proof.
 
-### 2.3b ProVerif content
-
-A `proverif-query` node (`computed`, no `deps`) covers one named `query` of one `.pv` file: content
-`{file, sha256, query, result}`, where `query` is the literal query text as written in the source
-(e.g. `attacker(secret)`) and `result` is `true`, `false` or `cannot be proved`, as extracted by
-`ledger/proverif-dump.sh`. The file's hash already covers the whole model (channels, processes,
-equational theory), so there is no separate dependency graph as for Lean declarations: per §4 of
-the paper, a ProVerif result is evidence type E1 *relative to the model*, and the model itself is
-what a reader must judge faithful to the protocol it claims to describe.
-
 ### 2.4 Paper source and statements
 
 A `paper-source` node (`computed`) has content `{main, files: {path: sha256}, unresolved: [...]}`.
@@ -105,14 +95,53 @@ every claim they `uses`, and only the nodes these rest on. Each paper has its ow
 file (`lock-<paper>.json`; `lock.json` without a scope), so changes to the other paper's claims do not
 change this paper's root. Root kinds are `claim`, `attestation`, `environment` and `paper-source`.
 
+### 2.6 Adapter dumps
+
+Evidence that a field-specific tool produces (a model checker, a data pipeline, a statistics run) enters
+the ledger through an *adapter*: any program, in any language, that writes a JSON dump of this shape. The
+core needs no knowledge of the tool; it hashes what the dump says.
+
+```json
+{"adapter": "proverif", "version": "0.1.0",
+ "nodes": {"<reference>": {"kind": "...", "content": {...}, "deps": ["<reference>", ...],
+                           "spec": {...}, "status": "ok|open|failed", "word": "...",
+                           "register": ["<kind>:<name>", ...]}}}
+```
+
+* An adapter is configured as `[adapter.<name>]` in `ledger.toml` with `dump` (file below `ledger/`,
+  default `<name>.json`), optional `prefix` (default `<name>:`) and optional `extract` (a command that
+  reads the references of all claims on stdin, one per line, and writes the dump on stdout).
+  `<name>` must not be a claim field (section 3).
+* A claim refers to adapter nodes by listing references under the adapter's name, e.g.
+  `proverif = ["model.pv#attacker(s)"]`. A reference that is not in the dump is an error.
+* Every dump node becomes a node with id `prefix + reference`, `provenance` `computed`, the given `kind`
+  (not one of the core kinds of section 1) and `content`, and `deps` = the prefixed references in
+  `deps`, which must be in the same dump. Nodes no root rests on are dropped, as everywhere.
+* `spec` (optional) is what the node *states*, as opposed to how it was obtained: the analogue of a Lean
+  statement versus its proof. With `spec`, the node has `spec(n) = h` with `tag = "spec"`, payload
+  `{kind, content: spec}` and the `deps` that have a `spec` themselves, and a claim's spec hash uses
+  `spec(n)` for it; without `spec`, it uses `full(n)`. So whether a change resets the attestations on a
+  claim is the adapter's decision, made once per node kind.
+* `status`, `word` and `register` are not hashed. A claim shows, per adapter, the `word` (else the
+  `status`) of its worst reference (`failed` > `open` > `ok`), or `missing`. `register` items enter the
+  claim's register (section 4) like Lean axioms do.
+* An invalid dump contributes no nodes; its problems are errors.
+
+Example: `adapters/proverif.py`. A `proverif-query` node covers one named `query` of one `.pv` file:
+content `{file, sha256, query, result}`, where `query` is the literal query text as written in the source
+and `result` is `true`, `false` or `cannot be proved` (status `ok`, `failed`, `open`). There is no `spec`
+and no `deps`: the file's hash covers the whole model. Its register item `model:<file>` records that a
+ProVerif result is evidence type E1 *relative to the model*, and the model itself is what a reader must
+judge faithful to the protocol it claims to describe.
+
 ## 3. Human files
 
 Human-written nodes live in TOML files below `ledger/`, one table per node (see
 `examples/toy/ledger/`). Computed nodes are never written by hand; they are recomputed.
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
-  (declared type E1..E5), `lean` (declaration names), `proverif` (`"path/to/file.pv#query text"`
-  references into the ProVerif dump), `files` (paths), `uses` (other claims), `cites` (citation names).
+  (declared type E1..E5), `lean` (declaration names), `files` (paths), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
+  for each configured adapter a list of references under its name (section 2.6). Any other field is an error.
 * **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
   declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
   that is the conjunction of the parts and lists that theorem. A claim for a lemma used on the way may
@@ -187,9 +216,9 @@ back-translation are *generated* nodes (provenance `generated`) attached to the 
   `Quot.sound` are standard), `sorry` if `sorryAx` occurs;
 * `hyp:<name>` for each declared assumption constant occurring as a hypothesis of a statement;
 * `hyp:cited:<citation>` for each citation;
-* `model:<file>` for each distinct `.pv` file a claim's `proverif` references rest on;
+* the `register` items of the adapter nodes the claim refers to (e.g. `model:<file>` from ProVerif);
 * `assertion:<name>` for each assertion on the claim;
-* `evidence:none` if the claim has neither Lean declarations, ProVerif queries nor files.
+* `evidence:none` if the claim has neither Lean declarations, adapter references nor files.
 
 `Reg(c) = own(c) ∪ ⋃ Reg(u)` over `uses`, as a least fixed point (well defined on cycles).
 

@@ -5,9 +5,10 @@ name = "toy"
 dump = "lean.json"          # produced by the Lean extractor; hand-made here
 # extract = "./run.sh dump"  # reads declaration names on stdin, prints the JSON dump
 
-[proverif]
-dump = "proverif.json"       # produced by ledger/proverif-dump.sh; hand-made here
-# extract = "../../../ledger/proverif-dump.sh"  # reads .pv paths on stdin, prints the JSON dump
+[adapter.proverif]
+prefix = "pv:"               # node ids are pv:<reference>; claims list references under `proverif`
+dump = "proverif.json"       # adapter dump (docs/FORMAT.md 2.6); hand-made here, no ProVerif needed
+# extract = "python3 ../../adapters/proverif.py"  # references on stdin, dump on stdout
 
 [paper.toy]
 main = "paper/main.tex"

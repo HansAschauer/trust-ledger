@@ -1,1 +1,34 @@
-{"files":{"proverif/example.pv":{"sha256":"2d7ab6ebf60bdf22792196c9e27306afe98ed1d8f580b943d9d0c30c179d98b9","queries":{"attacker(s_plain)":"false","attacker(s_enc)":"true"}}}}
+{
+ "adapter": "proverif",
+ "nodes": {
+  "proverif/example.pv#attacker(s_enc)": {
+   "content": {
+    "file": "proverif/example.pv",
+    "query": "attacker(s_enc)",
+    "result": "true",
+    "sha256": "2d7ab6ebf60bdf22792196c9e27306afe98ed1d8f580b943d9d0c30c179d98b9"
+   },
+   "kind": "proverif-query",
+   "register": [
+    "model:proverif/example.pv"
+   ],
+   "status": "ok",
+   "word": "ok"
+  },
+  "proverif/example.pv#attacker(s_plain)": {
+   "content": {
+    "file": "proverif/example.pv",
+    "query": "attacker(s_plain)",
+    "result": "false",
+    "sha256": "2d7ab6ebf60bdf22792196c9e27306afe98ed1d8f580b943d9d0c30c179d98b9"
+   },
+   "kind": "proverif-query",
+   "register": [
+    "model:proverif/example.pv"
+   ],
+   "status": "failed",
+   "word": "false"
+  }
+ },
+ "version": "0.1.0"
+}

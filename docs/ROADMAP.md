@@ -18,6 +18,20 @@ files + `ledgercheck.sty`, tested by compiling a real paper), and the environmen
    valid. Post-publication attestations as small signed files checked by `verify-attestation`.
    Open: is `ssh-keygen` acceptable as the v1 dependency?
 
+## Next: adapters for other fields (agreed 2026-10-11, see ARCHITECTURE.md)
+
+1. Generic adapter dump in `FORMAT.md` 2.6. **Done.**
+2. ProVerif on the adapter dump (`adapters/proverif.py`); hashes of existing ledgers unchanged. **Done.**
+3. Lean on the adapter dump (`Dump.lean` writes it, or a thin converter); hashes unchanged if possible.
+4. Built-in kinds `source` (external data pinned by hash, URL/DOI, retrieval date), `step` (inputs to
+   outputs, a command or a manual step with a person; manual steps enter the register) and `check` (a
+   command whose recorded result supports a claim). Salted hashes (commitments) for data that must not be
+   published, since a plain hash of a small or guessable file reveals it. Format 0.2.0.
+5. Evidence vocabulary and checklists configurable in `ledger.toml` (E1 to E5 as the default profile);
+   one status column per adapter in `status` and `ledgercheck.sty` instead of fixed Lean/ProVerif columns.
+6. Toy examples for a lab measurement and a preregistered study, in the test suite; DVC/Snakemake import
+   as a step adapter; `reproduce`.
+
 ## Parked ideas
 ### Signed disagreement (negative attestations)
 An attestation with a negative outcome, e.g. "I checked claim X at spec hash H and the formal statement

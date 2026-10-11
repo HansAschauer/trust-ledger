@@ -25,6 +25,11 @@ ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis
 ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
+# adapters (FORMAT.md section 2.6): a claim lists references into an adapter's dump under the adapter's name
+CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "lean", "files", "uses", "cites", "note"}
+ADAPTER_STATUS = ("ok", "open", "failed")    # increasing severity; a claim shows the worst of its references
+CORE_KINDS = {"lean-decl", "file", "paper-source", "claim", "citation", "assertion", "attestation", "key",
+              "hypothesis", "reading", "assessment", "environment"}
 
 
 # ---------------------------------------------------------------- hashing (FORMAT.md section 2)
@@ -486,6 +491,31 @@ def lean_to_tex(text):
             "\\settowidth{\\lttw}{\\texttt{x}}\n" + "\n".join(out) + "}")
 
 
+# ---------------------------------------------------------------- adapter dumps (FORMAT.md section 2.6)
+def check_dump(d):
+    """Problems with an adapter dump; [] if it has the shape of FORMAT.md 2.6."""
+    if not isinstance(d, dict) or not isinstance(d.get("nodes"), dict):
+        return ['no "nodes" object']
+    out = []
+    for ref, n in d["nodes"].items():
+        if not isinstance(n, dict):
+            out.append(f"{ref}: not an object"); continue
+        if not isinstance(n.get("kind"), str) or n["kind"] in CORE_KINDS:
+            out.append(f"{ref}: kind must be a string other than the core kinds")
+        if not isinstance(n.get("content"), dict):
+            out.append(f"{ref}: content must be an object")
+        if n.get("status") not in ADAPTER_STATUS:
+            out.append(f"{ref}: status must be one of {', '.join(ADAPTER_STATUS)}")
+        for x in n.get("deps", []):
+            if x not in d["nodes"]:
+                out.append(f"{ref}: dependency {x!r} is not in the dump")
+        if not all(isinstance(r, str) and ":" in r for r in n.get("register", [])):
+            out.append(f"{ref}: register items must be strings 'kind:name'")
+        if "spec" in n and not isinstance(n["spec"], dict):
+            out.append(f"{ref}: spec must be an object")
+    return out
+
+
 # ---------------------------------------------------------------- loading
 class Ledger:
     def __init__(self, root, paper=None):
@@ -499,7 +529,7 @@ class Ledger:
         self.errors, self.warnings = [], []
         self.load_human()
         self.load_lean()
-        self.load_proverif()
+        self.load_adapters()
         self.load_papers()
         self.build()
 
@@ -674,17 +704,26 @@ class Ledger:
         elif any(c.get("lean") for c in self.claims.values()):
             self.errors.append(f"{p} missing: run `ledger.py extract`")
 
-    def load_proverif(self):
-        """ProVerif dump: {"files": {path: {sha256, queries: {query text: result}}}}."""
-        self.pv_files = {}
-        pc = self.cfg.get("proverif")
-        if not pc:
-            return
-        p = self.dir / pc.get("dump", "proverif.json")
-        if p.exists():
-            self.pv_files = json.loads(p.read_text()).get("files", {})
-        elif any(c.get("proverif") for c in self.claims.values()):
-            self.errors.append(f"{p} missing: run `ledger.py extract`")
+    def load_adapters(self):
+        """Adapter dumps (FORMAT.md 2.6): self.adapters[name] = {prefix, nodes: {reference: node}}."""
+        self.adapters = {}
+        if "proverif" in self.cfg:
+            self.errors.append("ledger.toml: the [proverif] section is now [adapter.proverif], with a dump in the "
+                               "adapter format (docs/FORMAT.md 2.6; extractor adapters/proverif.py)")
+        for name, ac in self.cfg.get("adapter", {}).items():
+            if name in CLAIM_FIELDS:
+                self.errors.append(f"adapter {name!r}: the name is a claim field")
+                continue
+            a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={})
+            p = self.dir / ac.get("dump", name + ".json")
+            if not p.exists():
+                if any(c.get(name) for c in self.claims.values()):
+                    self.errors.append(f"{p} missing: run `ledger.py extract`")
+                continue
+            d = json.loads(p.read_text())
+            problems = check_dump(d)
+            self.errors += [f"{p.name}: {x}" for x in problems]
+            a["nodes"] = {} if problems else d["nodes"]  # an invalid dump contributes nothing
 
     def expand_lean(self, names):
         out = []
@@ -735,25 +774,21 @@ class Ledger:
                     continue
                 payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
                 deps[i] = []
+        for name, a in self.adapters.items():  # every node of every dump; what no root rests on is dropped below
+            for ref, nd in a["nodes"].items():
+                i = a["prefix"] + ref
+                payload[i] = dict(kind=nd["kind"], provenance="computed", content=nd["content"])
+                deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", [])})
+                if "spec" in nd:
+                    self.spec_payload[i] = dict(kind=nd["kind"], content=nd["spec"])
+                    self.spec_deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", []) if "spec" in a["nodes"][x]})
+            for n, c in self.claims.items():
+                for ref in c.get(name, []):
+                    if ref not in a["nodes"]:
+                        self.errors.append(f"claim {n}: {name} reference {ref!r} not in dump")
         for n, c in self.claims.items():
-            for ref in c.get("proverif", []):
-                if "#" not in ref:
-                    self.errors.append(f"claim {n}: proverif reference {ref!r} must be 'file#query'")
-                    continue
-                i = "pv:" + ref
-                if i in payload:
-                    continue
-                f, q = ref.split("#", 1)
-                fd = self.pv_files.get(f)
-                if fd is None:
-                    self.errors.append(f"claim {n}: proverif file {f} not in dump")
-                    continue
-                if q not in fd.get("queries", {}):
-                    self.errors.append(f"claim {n}: proverif query {q!r} not in dump for {f}")
-                    continue
-                payload[i] = dict(kind="proverif-query", provenance="computed",
-                                  content=dict(file=f, sha256=fd["sha256"], query=q, result=fd["queries"][q]))
-                deps[i] = []
+            for f in sorted(set(c) - CLAIM_FIELDS - set(self.adapters)):
+                self.errors.append(f"claim {n}: unknown field {f!r} (no adapter of that name is configured)")
         for k, key in self.keys.items():
             payload["key:" + k] = dict(kind="key", provenance="asserted", content={
                 x: key.get(x, "") for x in ("person", "public", "source", "url", "fetched", "revoked")}
@@ -794,7 +829,7 @@ class Ledger:
                 else:
                     self.errors.append(f"claim {n}: Lean declaration {x} not in dump")
             d += ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
-            d += ["pv:" + r for r in c.get("proverif", []) if "pv:" + r in payload]
+            d += [i for i in self.adapter_ids(c) if i in payload]
             for x in c.get("cites", []):
                 if x in self.citations:
                     d.append("cite:" + x)
@@ -858,7 +893,8 @@ class Ledger:
         for n, c in self.claims.items():
             cp[n] = dict(text=self.stmt[n][0],
                          lean=[[x, self.spec.get("lean:" + x, "")] for x in sorted(c.get("lean", []))],
-                         others=[[i, self.full[i]] for i in sorted(deps["claim:" + n])
+                         others=[[i, self.spec[i] if i in self.spec_payload else self.full[i]]
+                                 for i in sorted(deps["claim:" + n])
                                  if not i.startswith(("lean:", "claim:", "reading:", "assess:"))])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
@@ -898,9 +934,10 @@ class Ledger:
                     r.add("sorry:" + x)
                 r |= {"hyp:" + a for a in d.get("assumptions", [])}
             r |= {"hyp:cited:" + x for x in c.get("cites", [])}
-            r |= {"model:" + ref.split("#", 1)[0] for ref in c.get("proverif", [])}
+            for name, a in self.adapters.items():
+                r |= {x for ref in c.get(name, []) for x in a["nodes"].get(ref, {}).get("register", [])}
             r |= {"assertion:" + a for a, v in self.assertions.items() if v["claim"] == n}
-            if not c.get("lean") and not c.get("files") and not c.get("proverif"):
+            if not c.get("lean") and not c.get("files") and not any(c.get(name) for name in self.adapters):
                 r.add("evidence:none")
             own[n] = r
         self.own_register = own
@@ -930,24 +967,26 @@ class Ledger:
             return "assumes"
         return "ok"
 
+    def adapter_ids(self, c):
+        """Node ids of the adapter references of claim c."""
+        return [a["prefix"] + ref for name, a in self.adapters.items() for ref in c.get(name, [])]
+
+    def adapter_status(self, name, n):
+        """The word of the worst-status node among claim n's references into adapter `name` (its `word`,
+        else its status), 'missing' if a reference is not in the dump, '-' if the claim has none."""
+        a, refs = self.adapters.get(name), self.claims[n].get(name, [])
+        if not refs or a is None:
+            return "-"
+        nodes = [a["nodes"].get(r) for r in refs]
+        if any(x is None for x in nodes):
+            return "missing"
+        worst = max(nodes, key=lambda x: ADAPTER_STATUS.index(x["status"]))
+        return worst.get("word", worst["status"])
+
     def proverif_status(self, n):
         """'ok' (every query true), 'false' (an attack was found), 'unproved' ('cannot be proved'),
-        'missing' (dump does not cover a referenced query) or '-' (no proverif evidence)."""
-        refs = self.claims[n].get("proverif", [])
-        if not refs:
-            return "-"
-        results = []
-        for ref in refs:
-            f, _, q = ref.partition("#")
-            fd = self.pv_files.get(f)
-            results.append(fd["queries"][q] if fd and q in fd.get("queries", {}) else None)
-        if any(r is None for r in results):
-            return "missing"
-        if any(r == "false" for r in results):
-            return "false"
-        if any(r != "true" for r in results):
-            return "unproved"
-        return "ok"
+        'missing' or '-': the words adapters/proverif.py gives its nodes."""
+        return self.adapter_status("proverif", n)
 
     def hypothesis_state(self, h):
         """Latest attestation per person on hypothesis h -> [(person, level, date, current?)]."""
@@ -1332,7 +1371,7 @@ def review_relations_tex(L, n, names):
         elif kind == "model":
             items.append(f"\\textbf{{ProVerif model}} {tt(name)}{via}: faithfulness to the protocol is not checked")
         elif kind == "evidence":
-            items.append(f"\\textbf{{No checked evidence}}{via}: no Lean, ProVerif or files")
+            items.append(f"\\textbf{{No checked evidence}}{via}: no Lean, adapter or file evidence")
         else:
             items.append(tt(r) + via)
     files = c.get("files", [])
@@ -1628,7 +1667,7 @@ def cmd_verify_attestation(L, args):
 
 
 def cmd_extract(L, args):
-    lc, pc = L.cfg.get("lean", {}), L.cfg.get("proverif", {})
+    lc, ac = L.cfg.get("lean", {}), {k: v for k, v in L.cfg.get("adapter", {}).items() if v.get("extract")}
     if lc.get("extract"):
         names = sorted({x for c in L.claims.values() for x in c.get("lean", [])})
         out = subprocess.run(lc["extract"], shell=True, cwd=L.root, input="\n".join(names), text=True, capture_output=True)
@@ -1639,16 +1678,19 @@ def cmd_extract(L, args):
         L.root = Path(args.dir).resolve()
         dump["env_hash"] = L.env_hash()  # lets later runs notice that the sources moved on
         (L.dir / lc.get("dump", "lean.json")).write_text(json.dumps(dump, separators=(",", ":")))
-    elif not pc.get("extract"):
-        sys.exit("no [lean] extract command configured")
-    if pc.get("extract"):
-        files = sorted({r.split("#", 1)[0] for c in L.claims.values() for r in c.get("proverif", [])})
-        out = subprocess.run(pc["extract"], shell=True, cwd=L.root, input="\n".join(files), text=True, capture_output=True)
+    elif not ac:
+        sys.exit("no extract command configured ([lean] or [adapter.NAME])")
+    for name, cfg in ac.items():  # stdin: every reference the claims make into this adapter; stdout: its dump
+        refs = sorted({r for c in L.claims.values() for r in c.get(name, [])})
+        out = subprocess.run(cfg["extract"], shell=True, cwd=L.root, input="\n".join(refs), text=True, capture_output=True)
         sys.stderr.write(out.stderr[-3000:])
         if out.returncode:
             return out.returncode
-        (L.dir / pc.get("dump", "proverif.json")).write_text(
-            json.dumps({"files": json.loads(out.stdout)}, separators=(",", ":")))
+        dump = json.loads(out.stdout)
+        problems = check_dump(dump)
+        if problems:
+            sys.exit(f"adapter {name}: the extractor wrote an invalid dump:\n  " + "\n  ".join(problems[:20]))
+        (L.dir / cfg.get("dump", name + ".json")).write_text(json.dumps(dump, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
     return 0
 
 

@@ -1,4 +1,4 @@
-import json, shutil, subprocess, sys, tempfile, unittest
+import json, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -512,6 +512,116 @@ class Signing(Toy):
         self.assertIn("{signed}", st)
         self.assertIn("\\LedgerKeyRow{Alice}{SHA256:", st)
         self.assertIn("\\def\\LedgerNSignedAtt{1}", st)
+
+
+PROVERIF_OUTPUT = """Process 0 (that is, the initial process): ...
+--------------------------------------------------------------
+Verification summary:
+
+Query not attacker(s_plain[]) is false.
+
+Query not attacker(s_enc[]) is true.
+
+--------------------------------------------------------------
+"""
+
+
+class Adapters(unittest.TestCase):
+    """Adapter dumps (FORMAT.md 2.6): the ProVerif extractor, and a made-up lab adapter with a spec part."""
+    setUp, tearDown, L = Toy.setUp, Toy.tearDown, Toy.L
+
+    def add(self, name, text):
+        f = self.p / "ledger" / name
+        f.write_text((f.read_text() if f.exists() else "") + text)
+
+    def lab(self, fit_spec_value="1.23", fit_log="run 1", raw="aa", status="open"):
+        nodes = {"raw": dict(kind="dataset", content=dict(sha256=raw), status="ok"),
+                 "fit": dict(kind="fit", content=dict(value=fit_spec_value, log=fit_log), deps=["raw"],
+                             spec=dict(quantity="g", value=fit_spec_value), status=status, word="unchecked",
+                             register=["manual:calibration"])}
+        (self.p / "ledger" / "lab.json").write_text(json.dumps(dict(adapter="lab", nodes=nodes)))
+
+    def with_lab(self):
+        self.add("ledger.toml", '\n[adapter.lab]\ndump = "lab.json"\n')
+        self.add("claims.toml", '\n[claim.measured]\ntext = "g = 1.23"\nevidence = "E4"\nlab = ["fit"]\n')
+        self.lab()
+
+    def test_proverif_extractor_writes_the_same_nodes(self):
+        r0 = self.L().root_hash
+        fake = self.tmp / "fake_proverif.py"
+        fake.write_text(f"print({PROVERIF_OUTPUT!r})\n")
+        f = self.p / "ledger" / "ledger.toml"
+        f.write_text(f.read_text().replace('# extract = "python3 ../../adapters/proverif.py"',
+                                           f'extract = "{sys.executable} {ROOT / "adapters" / "proverif.py"}"'))
+        old = os.environ.get("PROVERIF")
+        os.environ["PROVERIF"] = f"{sys.executable} {fake}"
+        try:
+            self.assertEqual(lg.main(["-C", str(self.p), "extract"]), 0)
+        finally:
+            os.environ.pop("PROVERIF") if old is None else os.environ.__setitem__("PROVERIF", old)
+        self.assertEqual(self.L().root_hash, r0)                 # the hand-made dump says the same
+
+    def test_proverif_parsing(self):
+        sys.path.insert(0, str(ROOT / "adapters"))
+        import proverif
+        self.assertEqual(proverif.queries_of("(* query hidden. *)\nquery attacker(a).\n  query x ==> y .\n"),
+                         ["attacker(a)", "x ==> y"])
+        out = PROVERIF_OUTPUT.replace("is true.", "cannot be proved.")
+        self.assertEqual(proverif.results_of(out), ["false", "proved"])
+
+    def test_generic_adapter_nodes_status_and_register(self):
+        self.with_lab()
+        L = self.L()
+        self.assertEqual(L.errors, [])
+        self.assertEqual(L.adapter_status("lab", "measured"), "unchecked")
+        self.assertIn("manual:calibration", L.register["measured"])
+        self.assertEqual(L.deps["lab:fit"], ["lab:raw"])
+        self.assertEqual(L.payload["lab:fit"]["provenance"], "computed")
+
+    def test_attestation_binds_to_the_adapter_spec(self):
+        self.with_lab()
+        lg.main(["-C", str(self.p), "attest", "measured", "--person", "X", "--level", "green"])
+        r0 = self.L().root_hash
+        self.lab(fit_log="run 2", raw="bb")                    # evidence changes, the stated result does not
+        L = self.L()
+        self.assertNotEqual(L.root_hash, r0)
+        self.assertTrue(L.attestation_state("measured")[0][3])
+        self.lab(fit_spec_value="1.25")                         # the stated result changes
+        self.assertFalse(self.L().attestation_state("measured")[0][3])
+
+    def test_worst_status_wins(self):
+        self.with_lab()
+        self.assertEqual(self.L().adapter_status("lab", "measured"), "unchecked")
+        self.add("claims.toml", '\n[claim.both]\ntext = "x"\nlab = ["raw", "fit"]\n')
+        self.assertEqual(self.L().adapter_status("lab", "both"), "unchecked")    # fit (open) is worse than raw (ok)
+        nodes = json.loads((self.p / "ledger" / "lab.json").read_text())
+        nodes["nodes"]["fit"].pop("word")
+        (self.p / "ledger" / "lab.json").write_text(json.dumps(nodes))
+        self.assertEqual(self.L().adapter_status("lab", "both"), "open")      # raw ok, fit open
+
+    def test_unknown_claim_field_is_an_error(self):
+        self.add("claims.toml", '\n[claim.measured]\ntext = "g = 1.23"\nlab = ["fit"]\n')
+        self.assertTrue(any("unknown field 'lab'" in e for e in self.L().errors))
+
+    def test_invalid_dump_is_an_error(self):
+        self.with_lab()
+        d = json.loads((self.p / "ledger" / "lab.json").read_text())
+        d["nodes"]["fit"]["status"] = "great"; d["nodes"]["fit"]["deps"] = ["nowhere"]
+        (self.p / "ledger" / "lab.json").write_text(json.dumps(d))
+        errs = " ".join(self.L().errors)
+        self.assertIn("status must be one of", errs)
+        self.assertIn("'nowhere' is not in the dump", errs)
+
+    def test_core_kinds_are_reserved(self):
+        self.with_lab()
+        d = json.loads((self.p / "ledger" / "lab.json").read_text())
+        d["nodes"]["fit"]["kind"] = "claim"
+        (self.p / "ledger" / "lab.json").write_text(json.dumps(d))
+        self.assertTrue(any("core kinds" in e for e in self.L().errors))
+
+    def test_old_proverif_section_is_an_error(self):
+        self.add("ledger.toml", '\n[proverif]\ndump = "proverif.json"\n')
+        self.assertTrue(any("[adapter.proverif]" in e for e in self.L().errors))
 
 
 class Merkle(unittest.TestCase):
