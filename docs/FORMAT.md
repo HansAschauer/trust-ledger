@@ -16,7 +16,7 @@ A ledger is a directed graph of nodes. A node has
 | field        | meaning |
 |--------------|---------|
 | `id`         | unique string, e.g. `lean:Toy.thm`, `claim:thm-twice`, `file:scripts/check.py` |
-| `kind`       | core: `file`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `reading`, `assessment`, `environment`; adapters add their own (section 2.6) |
+| `kind`       | core: `file`, `source`, `step`, `paper-source`, `claim`, `citation`, `assertion`, `attestation`, `key`, `hypothesis`, `reading`, `assessment`, `environment`; adapters add their own (section 2.6) |
 | `provenance` | `computed` (derived from an artefact by a tool), `asserted` (written by a human), `generated` (written by a model) |
 | `content`    | JSON object; what the node *is* (statement text, file digest, ...) |
 | `deps`       | list of node ids this node rests on |
@@ -130,6 +130,7 @@ shape. The core needs no knowledge of the tool; it hashes what the dump says.
   `register` items enter the claim's register (section 4); an item `hyp:<name>` makes `<name>` a
   hypothesis (section 3.2). `info` is for display (source position, log file).
 * An invalid dump contributes no nodes; its problems are errors.
+* `checks` is a built-in adapter (section 3.4); no configured adapter may use that name.
 
 **Lean** (`adapters/lean.py`, converting the output of `lean/Dump.lean`). One `lean-decl` node per
 declaration, reference = declaration name. `content` is everything the extractor reports except
@@ -157,7 +158,7 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 `examples/toy/ledger/`). Computed nodes are never written by hand; they are recomputed.
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
-  (declared type E1..E5), `files` (paths), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
+  (declared type E1..E5), `files` (paths), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
   for each configured adapter a list of references under its name (section 2.6). Any other field is an error.
 * **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
   declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
@@ -227,6 +228,45 @@ back-translation are *generated* nodes (provenance `generated`) attached to the 
   are **excluded from the claim's spec hash**: regenerating a back-translation or an assessment never resets an
   attestation. Neither is an attestation: they say nothing about who stands behind the claim.
 
+### 3.4 Data, steps and checks
+
+For results that rest on data rather than on a proof: where the data came from, how it was turned into the
+reported result, and a script that tests the claim against it. Paths are relative to the project root; a
+path may name a directory, whose digest is `H("tree", {relative path: sha256})` over every file below it.
+
+* `[source.<name>]`: data taken as given. `path`, and optional `url`, `doi`, `retrieved`, `license`, `note`
+  (all hashed). A node `source:<name>` of kind `source`, content `{name, path, ..., sha256}`:
+  * without a recorded hash, `sha256` is the digest of `path` (provenance `computed`);
+  * with a recorded `sha256` or `commitment`, that value (provenance `asserted`), so that a ledger whose data
+    is not published still verifies. Where `path` exists, it is checked against the record; a difference is
+    an error.
+  * **Commitments.** A plain hash of small or guessable data (a yes/no answer, a short table) reveals it: one
+    hashes the candidates and compares. For data that must stay private, record
+    `commitment = SHA-256("trust-ledger/0 commitment\0" + salt + "\0" + digest(path))` with a random salt
+    (64 hex digits) kept in `salt_file`, next to the data and as private as the data
+    (`ledger.py commitment PATH --salt-file FILE` creates the salt and prints the value). Whoever is given the
+    data and the salt can check the commitment; without the salt it reveals nothing about the data.
+* `[step.<name>]`: `inputs` (`source:<name>` or paths), `outputs` (paths), exactly one of `command` (how to
+  produce the outputs) and `manual` (what a person did, with `person`), optional `code` (paths of scripts or
+  project files that define the step) and `note`. A node `step:<name>` of kind `step` (asserted), content
+  `{name, command | manual, person, note, outputs, code: {path: digest}}`, deps: its inputs and the
+  environment node. A `file:` node of an output depends on the step that produces it; a path may be the
+  output of one step only. So a claim on a figure rests on the figure's file, the step that made it, that
+  step's inputs, and so on down to the sources.
+* `[check.<name>]`: `command`, `inputs` (as for steps), optional `code`. A command that tests a claim against
+  data and exits 0 if the claim holds. `ledger.py check` runs every check and writes `ledger/checks.json`,
+  the dump of the built-in adapter `checks` (prefix `check:`): kind `check`, content `{name, command, code,
+  inputs: {input: hash}, exit, stdout_sha256}`, **spec `{name, command, code}`**, status `ok`/`pass` or
+  `failed`/`fail`. Claims refer to checks with `checks = [...]`. The check node also depends on its inputs.
+  A recorded result whose inputs, command or code differ from the current ones is an error (run `check`
+  again), so `lock` cannot seal an outdated result; a failing check is recorded and shown, not hidden.
+  Because the spec is the check's definition, new data or a re-run never resets an attestation on a claim
+  that rests only on checks (the attestation says *this check tests what the claim says*), while a changed
+  check does.
+
+The ledger records the chain; it does not re-run steps. Whether the outputs are what the commands produce
+from the inputs is checked by re-running them (planned: `reproduce`).
+
 ## 4. Register
 
 `own(claim)` is computed from artefacts:
@@ -234,8 +274,10 @@ back-translation are *generated* nodes (provenance `generated`) attached to the 
 * the `register` items of the adapter nodes the claim refers to (Lean: `axiom:`, `sorry:`, `hyp:`;
   ProVerif: `model:`);
 * `hyp:cited:<citation>` for each citation;
+* `data:<source>` for each source and `manual:<step>` for each manual step the claim rests on through its
+  files, sources, steps and checks;
 * `assertion:<name>` for each assertion on the claim;
-* `evidence:none` if the claim has neither adapter references nor files.
+* `evidence:none` if the claim has neither adapter references, files nor sources.
 
 `Reg(c) = own(c) ∪ ⋃ Reg(u)` over `uses`, as a least fixed point (well defined on cycles).
 
@@ -258,6 +300,8 @@ difference. The root is what gets published (e.g. in the arXiv comment field); s
   claim spec hashes (one `evidence` list instead of `lean` and `others`) and hypothesis spec hashes
   (`stated` instead of `lean`). Status `conditional`; wildcards expand to `result` nodes.
   `[lean]` and `[proverif]` in `ledger.toml` became `[adapter.lean]` and `[adapter.proverif]`.
+  Added (no effect on ledgers that do not use them): sources, steps, checks and commitments (section 3.4),
+  directory digests for files.
 * **0.1.0**: first versioned format (lock files with `format` `0` were written by its unversioned
   predecessor, with the same hashing).
 

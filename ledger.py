@@ -4,12 +4,15 @@
 Single file, Python >= 3.11, standard library only. Normative format: docs/FORMAT.md.
 Version 0.2.0 (alpha), ledger format 0.2.0.
 
-  ledger.py [-C DIR] status [--strict]   table of claims: Lean/ProVerif status, attestation, register size
+  ledger.py [-C DIR] status [--strict]   table of claims: tool status, attestation, register size
   ledger.py [-C DIR] why CLAIM           everything CLAIM rests on, and who attested what
   ledger.py [-C DIR] lock                recompute and write ledger/lock.json (prints the root)
   ledger.py [-C DIR] verify              recompute and compare with lock.json; exit 1 on any difference
   ledger.py [-C DIR] attest CLAIM --person P --level green|yellow|conjecture [--reason R] [--checklist A1,A2]
-  ledger.py [-C DIR] extract             run the configured extractor(s) (writes the Lean/ProVerif dumps)
+  ledger.py [-C DIR] extract             run the extractors of the configured adapters (writes their dumps)
+  ledger.py [-C DIR] check               run the [check.NAME] commands, record their results (ledger/checks.json)
+  ledger.py [-C DIR] commitment PATH --salt-file F   salted commitment to data that stays private
+  ledger.py [-C DIR] migrate --old-lock F            rebind attestations after a format change
 
 DIR is the project root; it must contain ledger/ledger.toml.
 """
@@ -25,9 +28,9 @@ ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
 SIG_NAMESPACE = "trust-ledger-attestation"  # ssh-keygen -Y namespace: a signature cannot be replayed elsewhere
 EVIDENCE = ("E1", "E2", "E3", "E4", "E5")
 # adapters (FORMAT.md section 2.6): a claim lists references into an adapter's dump under the adapter's name
-CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "uses", "cites", "note"}
+CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "sources", "uses", "cites", "note"}
 ADAPTER_STATUS = ("ok", "conditional", "open", "failed")  # increasing severity; a claim shows its worst reference
-CORE_KINDS = {"file", "paper-source", "claim", "citation", "assertion", "attestation", "key",
+CORE_KINDS = {"file", "source", "step", "paper-source", "claim", "citation", "assertion", "attestation", "key",
               "hypothesis", "reading", "assessment", "environment"}
 
 
@@ -52,6 +55,26 @@ def H(tag, x):
 
 def sha_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def digest(path):
+    """SHA-256 of a file; for a directory H("tree", {relative path: sha256}) over every file below it."""
+    p = Path(path)
+    if p.is_dir():
+        return H("tree", {f.relative_to(p).as_posix(): sha_file(f) for f in sorted(p.rglob("*")) if f.is_file()})
+    return sha_file(p)
+
+
+def commitment(salt, dig):
+    """Salted commitment to data with digest `dig` (FORMAT.md 3.4): hides small or guessable data."""
+    return hashlib.sha256(("trust-ledger/0 commitment\0" + salt + "\0" + dig).encode("utf-8")).hexdigest()
+
+
+def read_salt(path):
+    salt = Path(path).read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", salt):
+        raise ValueError(f"{path}: a salt is 64 lowercase hex digits")
+    return salt
 
 
 def merkle(payload, deps, tag):
@@ -541,6 +564,7 @@ class Ledger:
     def load_human(self):
         self.claims, self.citations, self.assertions, self.attestations, self.keys = {}, {}, {}, [], {}
         self.hypotheses, self.assessments = {}, {}
+        self.sources, self.steps, self.checks = {}, {}, {}
         for f in sorted(self.dir.glob("*.toml")):
             if f.name == "ledger.toml":
                 continue
@@ -552,6 +576,17 @@ class Ledger:
             self.keys.update(t.get("key", {}))
             self.hypotheses.update(t.get("hypothesis", {}))
             self.assessments.update(t.get("assessment", {}))
+            self.sources.update(t.get("source", {}))
+            self.steps.update(t.get("step", {}))
+            self.checks.update(t.get("check", {}))
+        for n, st in self.steps.items():
+            if bool(st.get("command")) == bool(st.get("manual")):
+                self.errors.append(f"step {n}: needs exactly one of `command` and `manual`")
+            elif st.get("manual") and not st.get("person"):
+                self.errors.append(f"step {n}: a manual step needs the `person` who did it")
+        for n, ch in self.checks.items():
+            if not ch.get("command"):
+                self.errors.append(f"check {n}: needs a `command`")
         for n, c in self.claims.items():
             if c.get("evidence", "E5") not in EVIDENCE:
                 self.errors.append(f"claim {n}: unknown evidence type {c['evidence']!r}")
@@ -703,30 +738,35 @@ class Ledger:
                 self.errors.append(f"ledger.toml: the [{old}] section is now [adapter.{old}], with a dump in the adapter "
                                    f"format (docs/FORMAT.md 2.6; converter/extractor adapters/{old}.py)")
         for name, ac in self.cfg.get("adapter", {}).items():
-            if name in CLAIM_FIELDS:
-                self.errors.append(f"adapter {name!r}: the name is a claim field")
+            if name in CLAIM_FIELDS or name == "checks":
+                self.errors.append(f"adapter {name!r}: the name is a claim field or a built-in adapter")
                 continue
-            a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={}, words=[], environment=None)
-            p = self.dir / ac.get("dump", name + ".json")
-            if not p.exists():
-                if any(c.get(name) for c in self.claims.values()):
-                    self.errors.append(f"{p} missing: run `ledger.py extract`")
-                continue
-            d = json.loads(p.read_text())
-            problems = check_dump(d)
-            self.errors += [f"{p.name}: {x}" for x in problems]
-            if problems:
-                continue  # an invalid dump contributes nothing
-            a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"))
-            if d.get("env_hash") and d["env_hash"] != self.env_hash():
-                self.errors.append(f"{p.name} is older than the sources it was extracted from "
-                                   "(environment files changed): run `ledger.py extract`")
+            self.load_dump(name, ac, "ledger.py extract")
+        if self.checks:  # built-in adapter: results of [check.*], written by `ledger.py check`
+            self.load_dump("checks", dict(prefix="check:", dump="checks.json"), "ledger.py check")
         for c in self.claims.values():
             for name, a in self.adapters.items():
                 if name in c:
                     c[name] = self.expand(a, c[name])
         lean = self.adapters.get("lean", {}).get("nodes", {})
         self.decls = {n: nd["content"] for n, nd in lean.items()}  # Lean declarations, for the review packet
+
+    def load_dump(self, name, ac, hint):
+        a = self.adapters[name] = dict(prefix=ac.get("prefix", name + ":"), nodes={}, words=[], environment=None)
+        p = self.dir / ac.get("dump", name + ".json")
+        if not p.exists():
+            if any(c.get(name) for c in self.claims.values()):
+                self.errors.append(f"{p} missing: run `{hint}`")
+            return
+        d = json.loads(p.read_text())
+        problems = check_dump(d)
+        self.errors += [f"{p.name}: {x}" for x in problems]
+        if problems:
+            return  # an invalid dump contributes nothing
+        a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"))
+        if d.get("env_hash") and d["env_hash"] != self.env_hash():
+            self.errors.append(f"{p.name} is older than the sources it was extracted from "
+                               f"(environment files changed): run `{hint}`")
 
     @staticmethod
     def expand(a, refs):
@@ -757,17 +797,10 @@ class Ledger:
             i = "assert:" + n
             payload[i] = dict(kind="assertion", provenance="asserted", content=dict(claim=a["claim"], text=a["text"]))
             deps[i] = []
-        self.files = {}
+        self.build_data(payload, deps, env)
         for n, c in self.claims.items():
             for f in c.get("files", []):
-                i = "file:" + f
-                if i in payload:
-                    continue
-                if not (self.root / f).exists():
-                    self.errors.append(f"claim {n}: file {f} not found")
-                    continue
-                payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=sha_file(self.root / f)))
-                deps[i] = []
+                self.file_node(payload, deps, f, f"claim {n}")
         for name, a in self.adapters.items():  # every node of every dump; what no root rests on is dropped below
             for ref, nd in a["nodes"].items():
                 i = a["prefix"] + ref
@@ -780,7 +813,22 @@ class Ledger:
                 for ref in c.get(name, []):
                     if ref not in a["nodes"]:
                         self.errors.append(f"claim {n}: {name} reference {ref!r} not in dump")
+        for ref, ch in self.checks.items():  # a check rests on its inputs; a result for other inputs is outdated
+            i = "check:" + ref
+            if i not in payload:
+                continue
+            ins = {x: self.input_hash(x) for x in ch.get("inputs", [])}
+            for x in ins:
+                deps[i].append(x if x.startswith("source:") else self.file_node(payload, deps, x, f"check {ref}") or x)
+            deps[i] = sorted(set(d for d in deps[i] if d in payload))
+            got = self.adapters["checks"]["nodes"][ref]["content"]
+            if got.get("inputs") != ins or got.get("command") != ch["command"] or got.get("code") != self.code_hashes(ch):
+                self.errors.append(f"check {ref}: the recorded result is for other inputs or another version of the "
+                                   "check: run `ledger.py check`")
         for n, c in self.claims.items():
+            for x in c.get("sources", []):
+                if x not in self.sources:
+                    self.errors.append(f"claim {n}: unknown source {x}")
             for f in sorted(set(c) - CLAIM_FIELDS - set(self.adapters)):
                 self.errors.append(f"claim {n}: unknown field {f!r} (no adapter of that name is configured)")
         for k, key in self.keys.items():
@@ -823,6 +871,7 @@ class Ledger:
         for n, c in self.claims.items():
             i = "claim:" + n
             d = ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
+            d += ["source:" + x for x in c.get("sources", []) if "source:" + x in payload]
             d += [i for i in self.adapter_ids(c) if i in payload]
             for x in c.get("cites", []):
                 if x in self.citations:
@@ -898,6 +947,76 @@ class Ledger:
                                     if payload[i]["kind"] in ROOT_KINDS])
         self.register = self.compute_register()
 
+    # -------------------------------------------------------- data, steps, checks (FORMAT.md 3.4)
+    def file_node(self, payload, deps, f, who):
+        """Node id of the file (or directory) f, created on first use; it rests on the step that produces it."""
+        i = "file:" + f
+        if i not in payload:
+            if not (self.root / f).exists():
+                self.errors.append(f"{who}: file {f} not found")
+                return None
+            payload[i] = dict(kind="file", provenance="computed", content=dict(path=f, sha256=digest(self.root / f)))
+            deps[i] = ["step:" + self.producer[f]] if f in self.producer else []
+        return i
+
+    def code_hashes(self, x):
+        return {f: digest(self.root / f) if (self.root / f).exists() else "missing" for f in sorted(x.get("code", []))}
+
+    def input_hash(self, x):
+        """Current hash of a step or check input: a source's recorded value, or a file's digest."""
+        if x.startswith("source:"):
+            return self.source_value.get(x[7:], "unknown")
+        return digest(self.root / x) if (self.root / x).exists() else "missing"
+
+    def build_data(self, payload, deps, env):
+        self.producer, self.source_value = {}, {}
+        for n, st in self.steps.items():
+            for f in st.get("outputs", []):
+                if f in self.producer:
+                    self.errors.append(f"file {f} is an output of two steps: {self.producer[f]} and {n}")
+                self.producer.setdefault(f, n)
+        for n, src in self.sources.items():
+            meta = {k: src[k] for k in ("path", "url", "doi", "retrieved", "license", "note") if k in src}
+            path = self.root / src["path"] if src.get("path") else None
+            recorded = src.get("commitment") or src.get("sha256")
+            if recorded:  # the hash is recorded: the data may be absent (not published), so the node is asserted
+                key = "commitment" if src.get("commitment") else "sha256"
+                payload["source:" + n] = dict(kind="source", provenance="asserted", content=dict(meta, name=n, **{key: recorded}))
+                if path and path.exists():  # the author's copy: check it against the record
+                    salt = self.root / src["salt_file"] if src.get("salt_file") else None
+                    if key == "sha256" and digest(path) != recorded:
+                        self.errors.append(f"source {n}: {src['path']} differs from the recorded sha256")
+                    elif key == "commitment" and salt and salt.exists() and commitment(read_salt(salt), digest(path)) != recorded:
+                        self.errors.append(f"source {n}: {src['path']} and its salt do not match the recorded commitment")
+            elif path and path.exists():
+                if src.get("salt_file"):
+                    self.errors.append(f"source {n}: record its commitment (`ledger.py commitment {src['path']} "
+                                       f"--salt-file {src['salt_file']}`), or drop salt_file")
+                payload["source:" + n] = dict(kind="source", provenance="computed", content=dict(meta, name=n, sha256=digest(path)))
+            else:
+                self.errors.append(f"source {n}: needs a `path` that exists, or a recorded `sha256` or `commitment`")
+                continue
+            deps["source:" + n] = []
+            self.source_value[n] = recorded or payload["source:" + n]["content"]["sha256"]
+        for n, st in self.steps.items():
+            i = "step:" + n
+            payload[i] = dict(kind="step", provenance="asserted", content=dict(
+                {k: st[k] for k in ("command", "manual", "person", "note") if k in st},
+                name=n, outputs=sorted(st.get("outputs", [])), code=self.code_hashes(st)))
+            d = [env]
+            for x in st.get("inputs", []):
+                if x.startswith("source:"):
+                    if x[7:] in self.sources:
+                        d.append(x)
+                    else:
+                        self.errors.append(f"step {n}: unknown source {x[7:]}")
+                else:
+                    d.append(self.file_node(payload, deps, x, f"step {n}"))
+            deps[i] = sorted(set(x for x in d if x))
+            for f in st.get("code", []):
+                if not (self.root / f).exists():
+                    self.errors.append(f"step {n}: code file {f} not found")
+
     def check_signature(self, k, a):
         """'unsigned' | 'signed' | 'invalid' | 'unknown-key' | 'revoked' | 'unchecked' for attestation k."""
         if not a.get("sig"):
@@ -921,7 +1040,19 @@ class Ledger:
             for name, a in self.adapters.items():
                 r |= {x for ref in c.get(name, []) for x in a["nodes"].get(ref, {}).get("register", [])}
             r |= {"assertion:" + a for a, v in self.assertions.items() if v["claim"] == n}
-            if not c.get("files") and not any(c.get(name) for name in self.adapters):
+            seen, todo = set(), list(self.deps["claim:" + n])  # the data chain: files, steps, sources, checks
+            while todo:
+                i = todo.pop()
+                kind = self.payload.get(i, {}).get("kind")
+                if i in seen or kind not in ("file", "step", "source", "check"):
+                    continue
+                seen.add(i)
+                todo += self.deps.get(i, [])
+                if kind == "source":
+                    r.add("data:" + i[7:])
+                elif kind == "step" and self.payload[i]["content"].get("manual"):
+                    r.add("manual:" + i[5:])
+            if not c.get("files") and not c.get("sources") and not any(c.get(name) for name in self.adapters):
                 r.add("evidence:none")
             own[n] = r
         self.own_register = own
@@ -1110,8 +1241,8 @@ def cmd_why(L, args):
     if n not in L.claims:
         sys.exit(f"unknown claim {n}")
     c = L.claims[n]
-    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}, lean {L.lean_status(n)}, "
-         f"proverif {L.proverif_status(n)}, spec {L.cspec[n][:12]}")
+    tools = "".join(f", {name} {L.adapter_status(name, n)}" for name in L.adapters if c.get(name))
+    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {c.get('evidence', 'E5')}{tools}, spec {L.cspec[n][:12]}")
     print("  rests on:")
     seen, todo = set(), list(L.deps["claim:" + n])
     while todo:
@@ -1616,6 +1747,45 @@ def cmd_addkey(L, args):
     return 0
 
 
+def cmd_check(L, args):
+    """Run every [check.*] command and record the results as the dump of the built-in `checks` adapter."""
+    if not L.checks:
+        sys.exit("no [check.NAME] tables in ledger/")
+    nodes, failed = {}, 0
+    for n, ch in sorted(L.checks.items()):
+        out = subprocess.run(ch["command"], shell=True, cwd=L.root, text=True, capture_output=True)
+        ok = out.returncode == 0
+        failed += not ok
+        print(f"check {n}: {'pass' if ok else 'FAIL (exit %d)' % out.returncode}")
+        code = L.code_hashes(ch)
+        nodes[n] = dict(kind="check", status="ok" if ok else "failed", word="pass" if ok else "fail",
+                        content=dict(name=n, command=ch["command"], code=code,
+                                     inputs={x: L.input_hash(x) for x in ch.get("inputs", [])},
+                                     exit=out.returncode, stdout_sha256=hashlib.sha256(out.stdout.encode()).hexdigest()),
+                        spec=dict(name=n, command=ch["command"], code=code),
+                        info=dict(stdout=out.stdout[-2000:], stderr=out.stderr[-2000:]))
+    dump = dict(adapter="checks", version=__version__, nodes=nodes, env_hash=L.env_hash())
+    (L.dir / "checks.json").write_text(json.dumps(dump, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
+    print(f"wrote {L.dir / 'checks.json'}" + (f"; {failed} check(s) failed (recorded as such)" if failed else ""))
+    return 0
+
+
+def cmd_commitment(L, args):
+    """Print the salted commitment to a file or directory, creating the salt file if it does not exist.
+    Paths are relative to the project root (-C), like everywhere in the ledger."""
+    root = Path(args.dir)
+    salt_file, data = root / args.salt_file, root / args.path
+    if not salt_file.exists():
+        import secrets
+        salt_file.parent.mkdir(parents=True, exist_ok=True)
+        salt_file.write_text(secrets.token_hex(32) + "\n")
+        salt_file.chmod(0o600)
+        print(f"created {salt_file}: keep it private, with the data; anyone with data and salt can check the commitment",
+              file=sys.stderr)
+    print(f'commitment = "{commitment(read_salt(salt_file), digest(data))}"')
+    return 0
+
+
 def cmd_migrate(L, args):
     """Rebind unsigned attestations from the statement hashes of an older format (FORMAT.md 6). The old lock file
     must have been current (old `verify` OK) when the dumps and ledger.toml were converted."""
@@ -1720,9 +1890,14 @@ def main(argv=None):
     p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
     p.add_argument("--url"); p.add_argument("--vouched-by")
     p = sub.add_parser("verify-attestation"); p.add_argument("file"); p.add_argument("--lock", required=True)
+    sub.add_parser("check", help="run the [check.NAME] commands, record their results (ledger/checks.json)")
+    p = sub.add_parser("commitment", help="salted commitment to data that is not published (FORMAT.md 3.4)")
+    p.add_argument("path"); p.add_argument("--salt-file", required=True, help="created with a random salt if missing")
     p = sub.add_parser("migrate", help="rebind attestations after a format change, from the old lock file")
     p.add_argument("--old-lock", required=True, help="lock file written by the previous format, current when converting")
     args = ap.parse_args(argv)
+    if args.cmd == "commitment":
+        return cmd_commitment(None, args)
     if args.cmd in ("extract", "verify-attestation", "addkey"):  # no ledger build needed (the dump may not exist yet)
         L = Ledger.__new__(Ledger)
         L.root = Path(args.dir).resolve(); L.dir = L.root / "ledger"

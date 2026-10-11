@@ -5,3 +5,4 @@ examples/*/ledger/keys.toml
 examples/*/ledger/lock*.json
 examples/*/paper/ledger/
 examples/*/review/
+examples/*/private/

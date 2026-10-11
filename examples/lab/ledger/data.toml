@@ -1,0 +1,27 @@
+# Data, the steps that turn it into the reported result, and a check that the result supports the claim.
+
+[source.raw]
+path = "data/raw.csv"            # published with the paper: hashed from the file
+note = "pendulum periods, 5 lengths x 6 trials, measured 2026-10-03"
+
+[source.calibration-log]          # not published (lab notebook): only a salted commitment is recorded,
+path = "private/calibration-log.txt"   # checked on the author's machine, where the file and the salt exist
+salt_file = "private/calibration-log.salt"
+commitment = "c77034e46bd6470fa15bbc92694f2671ee29f15b64e8c247429ba0b18f60cb09"
+
+[step.calibrate]
+manual = "stopwatch latency measured against a 1 Hz reference pulse (20 trials); mean entered in data/calibration.json"
+person = "A. Experimenter"
+inputs = ["source:calibration-log"]
+outputs = ["data/calibration.json"]
+
+[step.fit]
+command = "python3 scripts/fit.py"
+code = ["scripts/fit.py"]
+inputs = ["source:raw", "data/calibration.json"]
+outputs = ["results/g.json"]
+
+[check.g-value]
+command = "python3 checks/g_value.py"
+code = ["checks/g_value.py"]
+inputs = ["results/g.json"]

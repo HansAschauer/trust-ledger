@@ -1,4 +1,4 @@
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import json, os, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -668,6 +668,116 @@ class Adapters(unittest.TestCase):
     def test_old_proverif_section_is_an_error(self):
         self.add("ledger.toml", '\n[proverif]\ndump = "proverif.json"\n')
         self.assertTrue(any("[adapter.proverif]" in e for e in self.L().errors))
+
+
+LAB = ROOT / "examples" / "lab"
+
+
+class Lab(unittest.TestCase):
+    """Sources, steps and checks (FORMAT.md 3.4), on examples/lab as a fresh clone sees it (no private data)."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        shutil.copytree(LAB, self.tmp / "p", ignore=shutil.ignore_patterns("private", "lock*.json", "attestations.toml"))
+        self.p = self.tmp / "p"
+
+    tearDown = Toy.tearDown
+
+    def L(self):
+        return lg.Ledger(self.p)
+
+    def run_main(self, *args):
+        import io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            rc = lg.main(["-C", str(self.p), *args])
+        return rc, out.getvalue()
+
+    def edit(self, rel, fn):
+        f = self.p / rel
+        f.write_text(fn(f.read_text()))
+
+    def test_chain_and_register(self):
+        L = self.L()
+        self.assertEqual(L.errors, [])
+        self.assertEqual(L.deps["file:results/g.json"], ["step:fit"])                    # outputs rest on their step
+        self.assertEqual(L.deps["step:fit"], ["env:lab", "file:data/calibration.json", "source:raw"])
+        self.assertEqual(L.deps["file:data/calibration.json"], ["step:calibrate"])
+        self.assertEqual(L.register["g-measured"], ["data:calibration-log", "data:raw", "manual:calibrate"])
+        self.assertEqual(L.payload["source:calibration-log"]["provenance"], "asserted")   # data absent: recorded value
+        self.assertEqual(L.payload["source:raw"]["provenance"], "computed")
+        self.assertEqual(L.adapter_status("checks", "g-measured"), "pass")
+        self.assertEqual(self.run_main("lock")[0], 0)
+        self.assertEqual(self.run_main("verify")[0], 0)
+
+    def test_outdated_check_blocks_lock(self):
+        self.edit("results/g.json", lambda t: t.replace("9.7916", "9.7917"))
+        self.assertTrue(any("other inputs" in e for e in self.L().errors))
+        self.assertEqual(self.run_main("lock")[0], 1)
+        self.assertEqual(self.run_main("check")[0], 0)                                   # rerun: current again
+        self.assertEqual(self.L().errors, [])
+
+    def test_failed_check_is_recorded_not_hidden(self):
+        self.edit("results/g.json", lambda t: t.replace('"g_err": 0.0094', '"g_err": 0.05'))
+        self.run_main("check")
+        L = self.L()
+        self.assertEqual((L.errors, L.adapter_status("checks", "g-measured")), ([], "fail"))
+
+    def test_attestation_binds_to_the_check_definition_not_the_data(self):
+        self.edit("ledger/claims.toml", lambda t: t + '\n[claim.g-checked]\ntext = "g = 9.80 +- 0.03"\nchecks = ["g-value"]\n')
+        self.run_main("attest", "g-checked", "--person", "X", "--level", "green")
+        r0 = self.L().root_hash
+        self.edit("data/raw.csv", lambda t: t.replace("0.40,", "0.40,1", 1).replace(",1", ",", 1))  # same data, rewritten
+        self.edit("results/g.json", lambda t: t.replace("9.7916", "9.7915"))               # a refit, say
+        self.run_main("check")
+        L = self.L()
+        self.assertNotEqual(L.root_hash, r0)
+        self.assertTrue(L.attestation_state("g-checked")[0][3])                           # the check is the same
+        self.edit("checks/g_value.py", lambda t: t.replace("2 * r", "3 * r"))             # the check is weakened
+        self.run_main("check")
+        self.assertFalse(self.L().attestation_state("g-checked")[0][3])
+
+    def test_commitment_checked_where_the_data_is(self):
+        (self.p / "private").mkdir()
+        (self.p / "private" / "calibration-log.txt").write_text("my notebook\n")
+        rc, out = self.run_main("commitment", "private/calibration-log.txt", "--salt-file", str(self.p / "private" / "calibration-log.salt"))
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r'^commitment = "[0-9a-f]{64}"\n$')
+        self.assertEqual(oct((self.p / "private" / "calibration-log.salt").stat().st_mode & 0o777), "0o600")
+        self.assertTrue(any("do not match the recorded commitment" in e for e in self.L().errors))  # recorded for other data
+        self.edit("ledger/data.toml", lambda t: re.sub(r'commitment = "[0-9a-f]{64}"', out.strip(), t))
+        self.assertEqual(self.L().errors, [])
+        rc, again = self.run_main("commitment", "private/calibration-log.txt", "--salt-file", str(self.p / "private" / "calibration-log.salt"))
+        self.assertEqual(again, out)                                                      # same salt, same commitment
+        self.assertNotEqual(out.split('"')[1], lg.digest(self.p / "private" / "calibration-log.txt"))  # not the plain hash
+
+    def test_recorded_sha256_is_checked_against_local_data(self):
+        self.edit("ledger/data.toml", lambda t: t.replace('path = "data/raw.csv"', 'path = "data/raw.csv"\nsha256 = "' + "0" * 64 + '"'))
+        L = self.L()
+        self.assertEqual(L.payload["source:raw"]["provenance"], "asserted")
+        self.assertTrue(any("differs from the recorded sha256" in e for e in L.errors))
+
+    def test_directory_digest(self):
+        d = self.p / "data"
+        h = lg.digest(d)
+        (d / "extra.txt").write_text("x")
+        self.assertNotEqual(lg.digest(d), h)
+        self.assertEqual(len(h), 64)
+
+    def test_step_errors(self):
+        self.edit("ledger/data.toml", lambda t: t.replace('command = "python3 scripts/fit.py"',
+                                                            'command = "python3 scripts/fit.py"\nmanual = "by hand"'))
+        self.edit("ledger/data.toml", lambda t: t.replace('person = "A. Experimenter"\n', ""))
+        self.edit("ledger/data.toml", lambda t: t + '\n[step.again]\ncommand = "true"\noutputs = ["results/g.json"]\n')
+        errs = " ".join(self.L().errors)
+        self.assertIn("step fit: needs exactly one of", errs)
+        self.assertIn("step calibrate: a manual step needs the `person`", errs)
+        self.assertIn("results/g.json is an output of two steps", errs)
+
+    def test_unknown_source_and_missing_data(self):
+        self.edit("ledger/claims.toml", lambda t: t + '\n[claim.x]\ntext = "x"\nsources = ["nowhere"]\n')
+        self.edit("ledger/data.toml", lambda t: t + '\n[source.gone]\npath = "data/gone.csv"\n')
+        errs = " ".join(self.L().errors)
+        self.assertIn("claim x: unknown source nowhere", errs)
+        self.assertIn("source gone: needs a `path` that exists", errs)
 
 
 class Merkle(unittest.TestCase):

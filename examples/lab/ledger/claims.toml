@@ -1,0 +1,10 @@
+[claim.g-measured]
+text = "The measured gravitational acceleration is g = 9.80 +- 0.03 m/s^2."
+evidence = "E4"
+files = ["results/g.json"]
+checks = ["g-value"]
+
+[claim.latency]
+text = "The stopwatch latency of 0.012 s is subtracted from every period."
+evidence = "E5"
+files = ["data/calibration.json"]

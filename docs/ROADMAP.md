@@ -27,7 +27,8 @@ files + `ledgercheck.sty`, tested by compiling a real paper), and the environmen
 4. Built-in kinds `source` (external data pinned by hash, URL/DOI, retrieval date), `step` (inputs to
    outputs, a command or a manual step with a person; manual steps enter the register) and `check` (a
    command whose recorded result supports a claim). Salted hashes (commitments) for data that must not be
-   published, since a plain hash of a small or guessable file reveals it. Format 0.2.0.
+   published, since a plain hash of a small or guessable file reveals it. **Done** (part of format 0.2.0,
+   additive), with `examples/lab`.
 5. Evidence vocabulary and checklists configurable in `ledger.toml` (E1 to E5 as the default profile);
    one status column per adapter in `status` and `ledgercheck.sty` instead of fixed Lean/ProVerif columns.
 6. Toy examples for a lab measurement and a preregistered study, in the test suite; DVC/Snakemake import

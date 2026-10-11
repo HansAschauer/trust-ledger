@@ -1,0 +1,35 @@
+{
+ "adapter": "checks",
+ "env_hash": "103d806457b9520fa5f1132e505069a1a43edee2e1f87eeda42278e4804479a6",
+ "nodes": {
+  "g-value": {
+   "content": {
+    "code": {
+     "checks/g_value.py": "f7b0f0e408aa25c45ab3128c37da940e0d1300fe62c3eee336581de05cb4e737"
+    },
+    "command": "python3 checks/g_value.py",
+    "exit": 0,
+    "inputs": {
+     "results/g.json": "cfe30cdd6b9cd63894e6a055d7305886a775709eda78d7c306c8143539cce1c2"
+    },
+    "name": "g-value",
+    "stdout_sha256": "0be6b71b1b17fc106c32523ee8c4d477cda5daa261e67b2a2274daf1f9f0b6a5"
+   },
+   "info": {
+    "stderr": "",
+    "stdout": "fitted g = 9.7916 +- 0.0094 (n = 30); stated 9.8 +- 0.03: consistent\n"
+   },
+   "kind": "check",
+   "spec": {
+    "code": {
+     "checks/g_value.py": "f7b0f0e408aa25c45ab3128c37da940e0d1300fe62c3eee336581de05cb4e737"
+    },
+    "command": "python3 checks/g_value.py",
+    "name": "g-value"
+   },
+   "status": "ok",
+   "word": "pass"
+  }
+ },
+ "version": "0.2.0"
+}

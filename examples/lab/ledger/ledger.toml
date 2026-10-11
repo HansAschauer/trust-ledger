@@ -1,0 +1,7 @@
+# A lab measurement (a pendulum measurement of g): data, a manual and a scripted step, a check.
+# No Lean, no paper source: the claims carry their text by hand (`text`).
+[project]
+name = "lab"
+
+[environment]
+files = ["scripts/*.py"]
