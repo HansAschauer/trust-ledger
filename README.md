@@ -111,6 +111,8 @@ paragraph and the paragraph before it), the model-generated back-translation of 
 model-written assessment (`ledger/assessments.toml`) and the Lean text. It builds the paper once in a scratch
 directory for its `.aux`, so it never touches your build files, and it needs `latexmk` and `pdflatex`.
 Configure it with a `[review]` table (`readings`, `extracts`, `skip_envs` for reading aids such as explainer boxes).
+The Lean definitions of all extracts are shown once, numbered, in a section Definitions; each claim shows only its
+theorem(s) and the numbers of the definitions it uses (`--defs-inline` repeats them with every claim).
 Readings and assessments are generated nodes of the ledger: part of the root, never part of a statement hash.
 
 ## What it does and does not establish

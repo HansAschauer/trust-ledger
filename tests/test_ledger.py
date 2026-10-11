@@ -969,6 +969,62 @@ class Dvc(unittest.TestCase):
             dvc_steps.convert({"stages": {"x": {"foreach": [1, 2], "do": {"cmd": "true"}}}})
 
 
+EXTRACT_A = """/-
+STATEMENT ONLY. Translate the theorem at the end.
+-/
+import Mathlib
+
+namespace Formal
+open Finset
+variable {n : ℕ}
+
+abbrev Tens (n : ℕ) := (Fin n → Fin 3) → ℝ
+
+/-- The nuclear norm,
+    over unit vectors. -/
+noncomputable def nuc (A : Tens n) : ℝ := sInf {r | r = 0}
+
+theorem a_thm (A : Tens n) : 0 ≤ nuc A := by
+  sorry
+
+end Formal
+"""
+
+
+class ReviewDefinitions(unittest.TestCase):
+    """The review packet shows each definition once (ledger.py review; --defs-inline for the old layout)."""
+    def test_split_extract(self):
+        pre, decls = lg.split_extract(EXTRACT_A)
+        self.assertEqual(pre, ["namespace Formal", "open Finset", "variable {n : ℕ}"])
+        self.assertEqual([(k, n) for k, n, _ in decls], [("abbrev", "Tens"), ("def", "nuc"), ("theorem", "a_thm")])
+        self.assertTrue(decls[1][2].startswith("/-- The nuclear norm,\n    over unit vectors. -/\nnoncomputable def nuc"))
+        self.assertTrue(decls[2][2].endswith("sorry"))
+
+    def test_definitions_once_and_variants(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "a.lean").write_text(EXTRACT_A)
+            (tmp / "b.lean").write_text(EXTRACT_A.replace("a_thm", "b_thm"))
+            (tmp / "c.lean").write_text(EXTRACT_A.replace("r = 0", "r = 1").replace("a_thm", "c_thm"))
+            out, refs, thms = lg.review_definitions(None, ["a", "b", "c"], lambda n: tmp / f"{n}.lean")
+            text = "\n".join(out)
+            self.assertEqual(text.count("abbrev Tens"), 1)                                 # three extracts, shown once
+            self.assertEqual(text.count("rv:def:D1}"), 1)                                  # Tens once
+            self.assertIn("rv:def:D2a}", text); self.assertIn("rv:def:D2b}", text)         # nuc in two variants
+            self.assertIn("variant used by c", text)
+            self.assertEqual(refs["a"], [("D1", "Tens"), ("D2a", "nuc")])
+            self.assertEqual(refs["c"], [("D1", "Tens"), ("D2b", "nuc")])
+            self.assertTrue(thms["b"].startswith("theorem b_thm") and "nuc A" in thms["b"])
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_definition_refs_ranges(self):
+        r = lg.definition_refs([("D3", "x"), ("D1", "a"), ("D2", "b"), ("D7b", "nuc"), ("D9", "c")])
+        self.assertTrue(r.startswith("D1--D3, "))
+        self.assertIn("D7b~\\texttt{nuc}", r)
+        self.assertIn("D9~\\texttt{c}", r)
+
+
 class Merkle(unittest.TestCase):
     def test_cycle_members_share_dependence(self):
         pay = {"a": 1, "b": 2, "c": 3}

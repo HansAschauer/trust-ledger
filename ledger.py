@@ -1569,7 +1569,96 @@ def review_relations_tex(L, n, names):
     return out
 
 
-def review_body(L, only=None, with_lean=True):
+LEAN_DECL = re.compile(r"^(?:@\[[^\]]*\]\s*)?(?:(?:noncomputable|private|protected|partial|unsafe)\s+)*"
+                       r"(def|abbrev|structure|class|inductive|instance|theorem|lemma|opaque|axiom)\s+([^\s:({\[]+)")
+LEAN_PREAMBLE = ("namespace ", "open ", "variable ", "section", "set_option ", "universe ")
+
+
+def split_extract(text):
+    """A statement extract as (preamble lines, [(kind, name, block)]): header comment, imports and `end` lines
+    removed; a docstring belongs to the declaration after it; a block runs to the next top-level line."""
+    text = re.sub(r"\A\s*/-(?!-).*?-/\s*", "", text, count=1, flags=re.S)
+    pre, decls, cur, doc, in_doc = [], [], None, [], False
+    for line in text.splitlines():
+        if in_doc or line.startswith("/--"):
+            doc.append(line)
+            in_doc = "-/" not in line  # a docstring may span lines
+            continue
+        m = LEAN_DECL.match(line)
+        if m:
+            cur = [m.group(1), m.group(2), doc + [line]]
+            decls.append(cur)
+            doc = []
+        elif line.startswith(LEAN_PREAMBLE):
+            pre.append(line); cur = None
+        elif line.startswith("import ") or re.match(r"^end(\s|$)", line):
+            cur = None
+        elif cur is not None:
+            cur[2].append(line)
+    return pre, [(k, n, "\n".join(b).strip("\n")) for k, n, b in decls]
+
+
+DEF_KINDS = {"def", "abbrev", "structure", "class", "inductive", "instance", "opaque", "axiom"}
+
+
+def review_definitions(L, names, extract_of):
+    """The definitions of all extracts, each once: (LaTeX section, {claim: [(number, name)]}, {claim: theorem text})."""
+    pre, defs, uses, thms = [], {}, {}, {}  # defs: name -> [[text, [claims]]] in order of first appearance
+    for n in names:
+        f = extract_of(n)
+        if not (f and f.is_file()):
+            continue
+        p, ds = split_extract(f.read_text(errors="replace"))
+        pre += [x for x in p if x not in pre]
+        uses[n], body = [], []
+        for kind, name, block in ds:
+            if kind not in DEF_KINDS:
+                body.append(block)
+                continue
+            variants = defs.setdefault(name, [])
+            for v in variants:
+                if v[0] == block:
+                    v[1].append(n); break
+            else:
+                variants.append([block, [n]])
+            uses[n].append((name, next(k for k, v in enumerate(variants) if v[0] == block)))
+        thms[n] = "\n\n".join(body)
+    number = {name: k + 1 for k, name in enumerate(defs)}
+    out = ["\\clearpage\\onecolumn{\\Large\\bfseries Definitions}\\label{rv:defs}\\par\\smallskip",
+           "Every Lean definition that a claim's statement rests on, once, in the order in which they first occur. "
+           "Each claim lists the numbers of the definitions it uses. A definition shown in several variants appears in "
+           "different texts in the extracts of different claims; the claims are named.\\par\\medskip"]
+    if pre:
+        out.append(lean_to_tex("\n".join(pre)) + "\\par\\medskip")
+    for name, variants in defs.items():
+        for k, (block, users) in enumerate(variants):
+            tag = f"D{number[name]}" + (chr(ord("a") + k) if len(variants) > 1 else "")
+            who = f" {{\\small(variant used by {', '.join(tex_esc(u) for u in users)})}}" if len(variants) > 1 else ""
+            out.append(f"\\noindent\\textbf{{{tag}}} \\texttt{{{tex_esc(name)}}}{who}\\label{{rv:def:{tag}}}\\par")
+            out.append(lean_to_tex(block) + "\\par\\smallskip")
+    refs = {n: [(f"D{number[name]}" + (chr(ord("a") + k) if len(defs[name]) > 1 else ""), name) for name, k in u]
+            for n, u in uses.items()}
+    return out, refs, thms
+
+
+def definition_refs(refs):
+    """'D1–D18, D20 rhoP (p. 4), ...': consecutive numbers of three or more as a range, the others by name and page."""
+    key = lambda t: (int(re.match(r"D(\d+)", t[0]).group(1)), t[0])
+    refs = sorted(set(refs), key=key)
+    out, k = [], 0
+    while k < len(refs):
+        j = k
+        while j + 1 < len(refs) and refs[j][0][1:].isdigit() and refs[j + 1][0] == f"D{int(refs[j][0][1:]) + 1}":
+            j += 1  # variants (D7a, D7b) are never part of a range
+        if j - k >= 2:
+            out.append(f"{refs[k][0]}--{refs[j][0]}")
+        else:
+            out += [f"{t}~\\texttt{{{tex_esc(name.split('.')[-1])}}} (p.~\\pageref{{rv:def:{t}}})" for t, name in refs[k:j + 1]]
+        k = j + 1
+    return ", ".join(out)
+
+
+def review_body(L, only=None, with_lean=True, defs_once=True):
     """LaTeX body of the review packet of the selected paper: for each claim the paper's statement, the model's
     back-translation of the Lean statement, a model's short assessment and the Lean text."""
     rv = L.cfg.get("review", {})
@@ -1595,6 +1684,11 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
 \medskip\textbf{Claims} (page):\par\smallskip""" % tex_esc(L.paper))
     idx = ", ".join(f"\\texttt{{{tex_esc(n)}}}~(\\pageref{{rv:{n}}})" for n in names)
     out.append("{\\small " + idx + "}")
+    extract_of = lambda n: rv.get("extracts") and (root / rv["extracts"].format(claim=n))
+    defrefs = thms = None
+    if with_lean and defs_once:
+        section, defrefs, thms = review_definitions(L, names, extract_of)
+        out += section
     for n in names:
         c = L.claims[n]
         labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
@@ -1628,8 +1722,15 @@ MISMATCH: a difference that probably needs a fix in the text or in the formalisa
                        f"{{\\small({tex_esc(a.get('model', '?'))}, {tex_esc(a.get('date', ''))})}}\\par\n{a.get('notes', '')}")
         else:
             out.append("\\noindent\\textit{No assessment yet.}")
-        ex = rv.get("extracts") and (root / rv["extracts"].format(claim=n))
-        if with_lean and ex and ex.is_file():
+        ex = extract_of(n)
+        if with_lean and defrefs is not None and n in thms:
+            used = definition_refs(defrefs[n])
+            out.append("\\par\\medskip{\\large\\bfseries Lean statement} {\\small(the statement from the source extract; "
+                       "its definitions are in the section Definitions)}\\par\\smallskip")
+            out.append("{\\small\\textbf{Uses the definitions} " + (used or "none")
+                       + " (section Definitions, p.~\\pageref{rv:defs}).}\\par\\smallskip")
+            out.append(lean_to_tex(thms[n].strip("\n")))
+        elif with_lean and ex and ex.is_file():
             text = ex.read_text(errors="replace")
             text = re.sub(r"\A\s*/-.*?-/\s*", "", text, count=1, flags=re.S) if text.lstrip().startswith("/-") else text
             text = re.sub(r"(?m)^import .*\n", "", text)
@@ -1693,7 +1794,7 @@ def cmd_review(L, args):
                 if rp.is_file():
                     shutil.copy(rp, work / "readings" / f"{n}.tex")
         only = set(args.claims.split(",")) if args.claims else None
-        body = review_body(L, only, with_lean=not args.no_lean)
+        body = review_body(L, only, with_lean=not args.no_lean, defs_once=not args.defs_inline)
         (work / "review-body.tex").write_text(body)
         # amsmath/amssymb: the packet uses starred display environments and \\tag, whatever the paper loads
         inject = ("\\AddToHook{begindocument/before}{\\RequirePackage{amsmath,amssymb}}"
@@ -2022,6 +2123,8 @@ def main(argv=None):
     p.add_argument("--out", help="output directory (default: [review] out, else ./review)")
     p.add_argument("--aux", help="use this .aux of the paper instead of building the paper once")
     p.add_argument("--no-lean", action="store_true", help="leave the Lean source text out")
+    p.add_argument("--defs-inline", action="store_true",
+                   help="repeat the definitions with every claim (default: once, in a section Definitions)")
     p = sub.add_parser("why"); p.add_argument("claim")
     p = sub.add_parser("attest"); p.add_argument("claim", nargs="?"); p.add_argument("--person", required=True)
     p.add_argument("--hypothesis", help="attest a hypothesis (e.g. that it is a known theorem) instead of a claim")
