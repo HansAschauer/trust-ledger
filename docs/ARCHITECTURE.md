@@ -32,6 +32,7 @@ field-specific tools during `status`, `lock` or `verify`; those read dumps and f
 | evidence vocabulary (E1 to E5 for mathematics) | `[[evidence]]` in `ledger.toml`, E1 to E5 as default | done |
 | checklists for attesting persons | `[checklist.ID]` in `ledger.toml`, for claims or hypotheses | done |
 | the paper (LaTeX now) | a paper adapter: claim id to statement text | planned |
+| pipelines a project already has | importers that write `[step.*]` tables (`adapters/dvc_steps.py`) | DVC done |
 
 Why dumps and not a plugin API: adapters can be written in the language of the field (R, Matlab, Lean,
 shell), the core stays one file, and an adapter cannot get the hashing wrong because it never hashes
@@ -55,9 +56,10 @@ anything that the core recomputes.
 ## `verify` and `reproduce`
 
 `verify` recomputes all hashes from the dumps and files in the repository and compares them with the lock
-file: cheap, and needs no field-specific tools. Rerunning the tools themselves (`extract`, later
-`reproduce` for steps) checks that the dumps are what the tools produce; it needs Lean, ProVerif, R, QGIS
-and so on. Readers who only want to know whether anything changed since publication need the first.
+file: cheap, and needs no field-specific tools. Rerunning the tools themselves (`extract`, `check`, and
+`reproduce` for steps) checks that the dumps and outputs are what the tools produce; it needs Lean,
+ProVerif, R, QGIS and so on. Readers who only want to know whether anything changed since publication need
+the first.
 
 ## Test for the design
 

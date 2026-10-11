@@ -33,7 +33,17 @@ files + `ledgercheck.sty`, tested by compiling a real paper), and the environmen
    one status column per adapter in `status` and `ledgercheck.sty` instead of fixed Lean/ProVerif columns.
    **Done.** (The review packet is still Lean-centred: back-translations of Lean statements.)
 6. Toy examples for a lab measurement and a preregistered study, in the test suite; DVC/Snakemake import
-   as a step adapter; `reproduce`.
+   as a step adapter; `reproduce`. **Done** (`examples/lab`, `examples/prereg`, `adapters/dvc_steps.py`,
+   `ledger.py reproduce`). Snakemake is not imported: a Snakefile is Python and cannot be read without
+   running Snakemake; an importer would call `snakemake --list-rules`/`--summary` and is left for when a
+   project needs it.
+
+## Open after the six steps
+
+* The review packet is Lean-centred (back-translations of Lean statements); other tools have none yet.
+* `reproduce` reports, it records nothing in the ledger; recording a reproduction (who, when, result) would
+  make it citable like a check.
+* A paper adapter for sources other than LaTeX (Markdown/Quarto, Word), and a marker for claims in prose.
 
 ## Parked ideas
 ### Signed disagreement (negative attestations)

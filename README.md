@@ -35,7 +35,8 @@ described in a paper in preparation.
 * `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
 * `adapters/`: extractors that write the generic adapter dump (`docs/FORMAT.md` 2.6): `lean.py`
   (Lean, via `Dump.lean`) and `proverif.py` (ProVerif models). An adapter can be written in any language;
-  the core knows no tool.
+  the core knows no tool. `dvc_steps.py` turns the stages of a DVC pipeline (`dvc.yaml`) into `[step.*]`
+  tables (needs PyYAML).
 * `docs/ARCHITECTURE.md`: what is fixed in the core and what varies by field; how to add an adapter.
 * `examples/toy`: a hand-made project with Lean and ProVerif evidence; `python3 ledger.py -C examples/toy status`.
 * `examples/lab`: a lab measurement: published and private data (salted commitment), a manual and a scripted

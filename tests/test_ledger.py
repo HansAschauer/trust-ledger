@@ -909,6 +909,64 @@ class Prereg(Example):
         self.assertFalse(self.L().attestation_state("h1")[0][3])
 
 
+DVC_YAML = """
+stages:
+  prepare:
+    cmd: python3 src/prepare.py
+    deps: [data/raw.txt, src/prepare.py]
+    params: [prepare.split]
+    outs: [data/prepared.txt]
+  train:
+    wdir: work
+    cmd:
+      - sort ../data/prepared.txt > model.txt
+      - wc -l < model.txt > ../metrics.txt
+    deps: [../data/prepared.txt]
+    outs: [model.txt]
+    metrics:
+      - ../metrics.txt:
+          cache: false
+"""
+
+
+@unittest.skipUnless(__import__("importlib").util.find_spec("yaml"), "needs PyYAML")
+class Dvc(unittest.TestCase):
+    """adapters/dvc_steps.py: the stages of dvc.yaml as steps."""
+    def setUp(self):
+        import yaml, dvc_steps
+        self.tmp = Path(tempfile.mkdtemp())
+        p = self.p = self.tmp / "p"
+        for d in ("data", "src", "work", "ledger"):
+            (p / d).mkdir(parents=True)
+        (p / "data" / "raw.txt").write_text("b\na\nc\n")
+        (p / "src" / "prepare.py").write_text("open('data/prepared.txt', 'w').write(open('data/raw.txt').read().upper())\n")
+        (p / "params.yaml").write_text("prepare:\n  split: 0.2\n")
+        (p / "ledger" / "ledger.toml").write_text('[project]\nname = "dvc"\n')
+        (p / "ledger" / "steps-dvc.toml").write_text(dvc_steps.convert(yaml.safe_load(DVC_YAML)))
+        (p / "ledger" / "claims.toml").write_text('[claim.model]\ntext = "the model"\nfiles = ["work/model.txt", "metrics.txt"]\n')
+        for cmd in ("python3 src/prepare.py", "cd work && sort ../data/prepared.txt > model.txt && wc -l < model.txt > ../metrics.txt"):
+            subprocess.run(cmd, shell=True, cwd=p, check=True)
+
+    tearDown = Toy.tearDown
+
+    def test_stages_become_steps(self):
+        L = lg.Ledger(self.p)
+        self.assertEqual(L.errors, [])
+        self.assertEqual(L.steps["prepare"], dict(command="python3 src/prepare.py", code=["src/prepare.py"],
+                                                  inputs=["data/raw.txt", "params.yaml"], outputs=["data/prepared.txt"]))
+        self.assertEqual(L.steps["train"]["command"],
+                         "cd work && sort ../data/prepared.txt > model.txt && wc -l < model.txt > ../metrics.txt")
+        self.assertEqual(L.steps["train"]["outputs"], ["metrics.txt", "work/model.txt"])
+        self.assertEqual(L.deps["step:train"], ["env:dvc", "file:data/prepared.txt"])     # the chain across stages
+        self.assertEqual(L.deps["file:data/prepared.txt"], ["step:prepare"])
+        self.assertEqual(lg.main(["-C", str(self.p), "reproduce"]), 0)
+
+    def test_foreach_is_reported(self):
+        import dvc_steps
+        with self.assertRaises(ValueError):
+            dvc_steps.convert({"stages": {"x": {"foreach": [1, 2], "do": {"cmd": "true"}}}})
+
+
 class Merkle(unittest.TestCase):
     def test_cycle_members_share_dependence(self):
         pay = {"a": 1, "b": 2, "c": 3}
