@@ -1,7 +1,12 @@
-# Ledger format, version 0 (draft)
+# Ledger format, version 0.1.0 (alpha)
 
 This file is the normative part. `ledger.py` is one implementation; anyone can write another
 that produces the same hashes. Nothing here depends on Lean or on Python.
+
+The format is versioned separately from the tool (semantic versioning). While the major version is 0,
+any minor version may change hashes; a patch version never does. The domain tag `trust-ledger/0` in
+section 2 names the major version only. Every lock file records the format version it was written in
+(section 5).
 
 ## 1. Nodes
 
@@ -194,6 +199,9 @@ back-translation are *generated* nodes (provenance `generated`) attached to the 
 hypothesis, sorted by id])`. Citations, assertions, files and Lean declarations are covered through the
 claims that depend on them.
 
-`ledger/lock.json` stores all computed hashes and the root. `verify` recomputes everything from
-the artefacts and fails on any difference. The root is what gets published (e.g. in the arXiv
+`ledger/lock.json` stores all computed hashes and the root, together with `format` (the format version,
+`"0.1.0"`) and `tool` (the version of the program that wrote it, informational). A lock file with
+`format` `0` was written before versioning and is read as 0.1.0, whose hashing is the same. `verify`
+refuses a lock file in a format it does not implement, recomputes everything from the artefacts and
+fails on any difference. The root is what gets published (e.g. in the arXiv
 comment field); see README.

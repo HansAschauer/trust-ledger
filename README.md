@@ -21,17 +21,17 @@ without a confirmation is simply listed as not yet attested. What the ledger doe
 results correct or decide whether a formal statement means what the text means; that remains the job of the
 people who attest. It makes it checkable what was checked, by whom, and what has changed since.
 
-Status: early prototype. The method is described in the paper in `paper/` (draft).
+Status: alpha, version 0.1.0 (ledger format 0.1.0). Formats and commands may still change. The method is
+described in a paper in preparation.
 
 * `ledger.py`: the whole tool. Python >= 3.11, standard library only; copy it into your project.
+  Some steps call external programs: `extract` runs Lean (or ProVerif), `review` needs `latexmk` and
+  `pdflatex`, signed attestations need `ssh-keygen`. `status`, `why`, `lock` and `verify` need nothing else.
 * `docs/FORMAT.md`: the normative format (hashing, node kinds, register). Other implementations
   should reproduce the same hashes.
 * `lean/Dump.lean`: reads a Lean project and writes out its theorems and definitions, the exact proof objects
   the Lean checker accepted, and the axioms they use, so that they can be fingerprinted.
 * `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
-* `paper/`: the paper that describes the method (`make paper`). It applies the method to itself: its theorems are
-  checked in `formal/` (Lean, core library only, `make formal`), linked by `ledger/`, and the appendix
-  "Evidence ledger" at the end of the paper is generated from that ledger.
 * `examples/toy`: a hand-made project; `python3 ledger.py -C examples/toy status`.
 
 ## Use

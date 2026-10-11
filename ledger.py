@@ -2,6 +2,7 @@
 """trust-ledger: a Merkle ledger of the evidence behind a paper's claims.
 
 Single file, Python >= 3.11, standard library only. Normative format: docs/FORMAT.md.
+Version 0.1.0 (alpha), ledger format 0.1.0.
 
   ledger.py [-C DIR] status [--strict]   table of claims: Lean/ProVerif status, attestation, register size
   ledger.py [-C DIR] why CLAIM           everything CLAIM rests on, and who attested what
@@ -15,6 +16,9 @@ DIR is the project root; it must contain ledger/ledger.toml.
 import argparse, base64, datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, tomllib, unicodedata
 from pathlib import Path
 
+__version__ = "0.1.0"
+FORMAT_VERSION = "0.1.0"          # docs/FORMAT.md; recorded in every lock file
+READS_FORMATS = (0, "0.1.0")      # 0: lock files written before versioning, same hashing as 0.1.0
 STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
 LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
@@ -1027,7 +1031,7 @@ class Ledger:
         return latest.get("_sig", "unsigned") if latest else "unsigned"
 
     def lock(self):
-        return dict(format=0, root=self.root_hash, toolchain=self.toolchain,
+        return dict(format=FORMAT_VERSION, tool=__version__, root=self.root_hash, toolchain=self.toolchain,
                     nodes={i: dict(kind=p["kind"], full=self.full[i]) for i, p in sorted(self.payload.items())},
                     claims={n: dict(spec=self.cspec[n], register=self.register[n]) for n in sorted(self.claims)},
                     hypotheses={h: dict(spec=self.hspec[h]) for h in self.scope_hyps})
@@ -1511,11 +1515,19 @@ def cmd_lock(L, args):
     return 0
 
 
+def read_lock(f):
+    lock = json.loads(Path(f).read_text())
+    if lock.get("format") not in READS_FORMATS:
+        sys.exit(f"{f}: ledger format {lock.get('format')!r}; this ledger.py ({__version__}) reads format "
+                 f"{FORMAT_VERSION} only")
+    return lock
+
+
 def cmd_verify(L, args):
     f = L.lockfile
     if not f.exists():
         sys.exit(f"no {f.name}: run `lock` first")
-    old, new, bad = json.loads(f.read_text()), L.lock(), list(L.errors)
+    old, new, bad = read_lock(f), L.lock(), list(L.errors)
     for i in sorted(set(old["nodes"]) | set(new["nodes"])):
         a, b = old["nodes"].get(i), new["nodes"].get(i)
         if a is None:
@@ -1592,7 +1604,7 @@ def cmd_addkey(L, args):
 def cmd_verify_attestation(L, args):
     """Check a standalone attestation file against a lock file (hash only; no ledger sources needed)."""
     t = tomllib.loads(Path(args.file).read_text())
-    lock = json.loads(Path(args.lock).read_text())
+    lock = read_lock(args.lock)
     project = L.cfg.get("project", {}).get("name", "project")
     bad = 0
     for a in t.get("attestation", []):
@@ -1642,6 +1654,7 @@ def cmd_extract(L, args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"trust-ledger {__version__} (format {FORMAT_VERSION})")
     ap.add_argument("-C", dest="dir", default=".")
     ap.add_argument("-P", "--paper", default=None, help="restrict to the claims of one configured paper (own root and lock file)")
     sub = ap.add_subparsers(dest="cmd", required=True)

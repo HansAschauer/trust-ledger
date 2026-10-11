@@ -58,6 +58,17 @@ class Toy(unittest.TestCase):
         self.edit_dump(lambda d: d["Toy.lem"].update(sorry=True))
         self.assertEqual(lg.main(["-C", str(self.p), "verify"]), 1)
 
+    def test_lock_records_format_and_verify_checks_it(self):
+        lg.main(["-C", str(self.p), "lock"])
+        f = self.p / "ledger" / "lock.json"
+        lock = json.loads(f.read_text())
+        self.assertEqual((lock["format"], lock["tool"]), (lg.FORMAT_VERSION, lg.__version__))
+        f.write_text(json.dumps(dict(lock, format=0)))                # written before versioning: same hashing
+        self.assertEqual(lg.main(["-C", str(self.p), "verify"]), 0)
+        f.write_text(json.dumps(dict(lock, format="9.0.0")))
+        with self.assertRaises(SystemExit):
+            lg.main(["-C", str(self.p), "verify"])
+
     def test_register_propagates(self):
         r = self.L().register
         self.assertIn("hyp:cited:banach", r["conj-general"])
@@ -109,6 +120,7 @@ class Latex(Toy):
 
     def test_generated_directory_excluded(self):
         r0 = self.L().root_hash
+        (self.p / "paper" / "ledger").mkdir(exist_ok=True)       # git does not keep the empty directory
         (self.p / "paper" / "ledger" / "toy-root.tex").write_text("changed")
         self.assertEqual(self.L().root_hash, r0)
 
