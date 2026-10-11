@@ -130,10 +130,10 @@
   \LedgerNConj{} \mbox{\ledgercheck@lvl@conjecture} (a different kind of statement, not a worse grade);
   \LedgerNStale{} with only \ledgercheck@st@stale{} attestations; \LedgerNNone{} not yet attested.
   \ifnum\LedgerNConditional>0 Machine checks: \LedgerNConditional{} hold given a hypothesis that is assumed, not
-  proved.\fi
+  proved.\ \fi
   \ifnum\LedgerNOpen>0 \LedgerNOpen{} have an open item in a machine check (an unfinished proof, an extra axiom,
-  an inconclusive result).\fi
-  \ifnum\LedgerNFailed>0 \LedgerNFailed{} have a failed or missing machine check.\fi
+  an inconclusive result).\ \fi
+  \ifnum\LedgerNFailed>0 \LedgerNFailed{} have a failed or missing machine check.\ \fi
   \ifnum\LedgerNAtt>0 \LedgerNSignedAtt{} of \LedgerNAtt{} attestations carry a valid signature.\fi}
 
 \newcommand{\ledgerappendix}{%

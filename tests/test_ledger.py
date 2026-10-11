@@ -285,6 +285,7 @@ class Latex(Toy):
     def test_package_compiles_in_a_minimal_document(self):
         """The package must not depend on macros of the host paper (it once used the paper's own \\Lean)."""
         lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "lem-succ", "--person", "X", "--level", "green"])
         lg.main(["-C", str(self.p), "-P", "toy", "tex"])
         (self.p / "paper" / "min.tex").write_text(
             "\\documentclass{article}\n\\usepackage[paper=toy]{ledgercheck}\n"
@@ -299,6 +300,7 @@ class Latex(Toy):
         self.assertIn("Evidence ledger", text)
         self.assertIn("Hypotheses", text)
         self.assertIn("given [H1]", text)
+        self.assertRegex(" ".join(text.split()), r"not proved\. 0 of 1 attestations")   # sentences of the banner apart
 
     def test_rows_follow_the_compiled_document_not_the_file_order(self):
         # a label that sits in main.tex AFTER the \\input line is later in the document than the chapter's labels
