@@ -1,0 +1,17 @@
+[claim.h1]
+text = """As preregistered, participants who received a worked example scored higher (difference of means
+1.19 points, n = 27 + 27 after excluding 4 participants who failed the attention check; one-sided
+permutation test p < .001)."""
+evidence = "confirmatory"
+sources = ["preregistration"]
+files = ["results/h1.json"]
+checks = ["h1"]
+
+[assertion.sample-size]           # a deviation from the preregistration, in the register of h1
+claim = "h1"
+text = "Preregistered N = 60; 58 participants took part (two did not show up). No replacement was recruited."
+
+[claim.age]
+text = "Mean scores did not increase with age (exploratory)."
+evidence = "exploratory"
+files = ["results/age.json"]

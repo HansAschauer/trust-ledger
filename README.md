@@ -40,6 +40,10 @@ described in a paper in preparation.
 * `examples/toy`: a hand-made project with Lean and ProVerif evidence; `python3 ledger.py -C examples/toy status`.
 * `examples/lab`: a lab measurement: published and private data (salted commitment), a manual and a scripted
   step, a check of the stated value; `python3 ledger.py -C examples/lab why g-measured`.
+* `examples/prereg`: a preregistered study (fictitious): its own evidence types (confirmatory, exploratory,
+  assertion) and checklist, private raw responses (salted commitment) anonymised by a step, a check of the
+  reported numbers, a deviation from the preregistration as an assertion; `python3 ledger.py -C examples/prereg
+  reproduce` re-runs what can be re-run without the private data.
 
 ## Use
 

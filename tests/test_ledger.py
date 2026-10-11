@@ -728,14 +728,16 @@ class Vocabulary(unittest.TestCase):
         self.assertNotIn("ProVerif", st)
 
 
-LAB = ROOT / "examples" / "lab"
+LAB, PREREG = ROOT / "examples" / "lab", ROOT / "examples" / "prereg"
 
 
-class Lab(unittest.TestCase):
-    """Sources, steps and checks (FORMAT.md 3.4), on examples/lab as a fresh clone sees it (no private data)."""
+class Example(unittest.TestCase):
+    """A copy of an example project as a fresh clone sees it: without its private data."""
+    EXAMPLE = None
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        shutil.copytree(LAB, self.tmp / "p", ignore=shutil.ignore_patterns("private", "lock*.json", "attestations.toml"))
+        shutil.copytree(self.EXAMPLE, self.tmp / "p", ignore=shutil.ignore_patterns("private", "lock*.json", "attestations.toml"))
         self.p = self.tmp / "p"
 
     tearDown = Toy.tearDown
@@ -752,6 +754,11 @@ class Lab(unittest.TestCase):
     def edit(self, rel, fn):
         f = self.p / rel
         f.write_text(fn(f.read_text()))
+
+
+class Lab(Example):
+    """Sources, steps and checks (FORMAT.md 3.4), on examples/lab."""
+    EXAMPLE = LAB
 
     def test_chain_and_register(self):
         L = self.L()
@@ -868,6 +875,38 @@ class Lab(unittest.TestCase):
         errs = " ".join(self.L().errors)
         self.assertIn("claim x: unknown source nowhere", errs)
         self.assertIn("source gone: needs a `path` that exists", errs)
+
+
+class Prereg(Example):
+    """A preregistered study: own evidence types and checklist, private raw data, a deviation as an assertion."""
+    EXAMPLE = PREREG
+
+    def test_clean_without_the_private_data(self):
+        L = self.L()
+        self.assertEqual((L.errors, L.warnings), ([], []))
+        self.assertEqual(L.evidence_ids, ["confirmatory", "exploratory", "assertion"])
+        self.assertEqual(L.register["h1"], ["assertion:sample-size", "data:preregistration", "data:responses"])
+        self.assertEqual(L.adapter_status("checks", "h1"), "pass")
+
+    def test_reproduce_without_the_private_data(self):
+        rc, out = self.run_main("reproduce")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("step anonymize: inputs not available here (source:responses), not re-run", out)
+        self.assertIn("results/h1.json identical", out)                     # from the published anonymised data
+
+    def test_preregistration_checklist(self):
+        rc, _ = self.run_main("attest", "h1", "--person", "R", "--level", "green", "--checklist", "P1,P2,P3,P4")
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.L().attestation_state("h1")[0][3])
+        with self.assertRaises(SystemExit):
+            self.run_main("attest", "h1", "--person", "R", "--level", "green", "--checklist", "A1")
+        self.edit("prereg/preregistration.md", lambda t: t.replace("p < .05", "p < .10"))  # the plan is changed later
+        self.assertFalse(self.L().attestation_state("h1")[0][3])
+
+    def test_a_deviation_is_part_of_the_statement(self):
+        self.run_main("attest", "h1", "--person", "R", "--level", "green")
+        self.edit("ledger/claims.toml", lambda t: t.replace("two did not show up", "two withdrew"))
+        self.assertFalse(self.L().attestation_state("h1")[0][3])
 
 
 class Merkle(unittest.TestCase):

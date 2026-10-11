@@ -1,0 +1,41 @@
+{
+ "adapter": "checks",
+ "env_hash": "6da66453fe01c287ba90632d5257586e8885da8c67c559b28d7d5f3b7711f9f6",
+ "labels": {
+  "fail": "fail",
+  "pass": "pass"
+ },
+ "legend": "pass/fail = the check script, which tests the result against its data, exits with 0 / another code on the recorded inputs.",
+ "nodes": {
+  "h1": {
+   "content": {
+    "code": {
+     "checks/h1.py": "09cfb942e257ba1aacdbb2f3ddb34ddb01ccd92b26ca520c5545f077349435af"
+    },
+    "command": "python3 checks/h1.py",
+    "exit": 0,
+    "inputs": {
+     "results/h1.json": "85a240f027869ccdbb03a0a145c819b388c2cebbecb1687098ff70c8392964e7"
+    },
+    "name": "h1",
+    "stdout_sha256": "1e03658aa393c48b8f017adbcbac96f7f06dfeb4b9441cc6e7141f23980c90fc"
+   },
+   "info": {
+    "stderr": "",
+    "stdout": "difference 1.185, n = 27 + 27, excluded 4, p = 0.0004: as reported\n"
+   },
+   "kind": "check",
+   "spec": {
+    "code": {
+     "checks/h1.py": "09cfb942e257ba1aacdbb2f3ddb34ddb01ccd92b26ca520c5545f077349435af"
+    },
+    "command": "python3 checks/h1.py",
+    "name": "h1"
+   },
+   "status": "ok",
+   "word": "pass"
+  }
+ },
+ "title": "Check",
+ "version": "0.2.0"
+}

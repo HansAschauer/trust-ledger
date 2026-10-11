@@ -1,0 +1,34 @@
+[source.preregistration]
+path = "prereg/preregistration.md"
+url = "https://example.org/preregistration-of-this-fictitious-study"
+retrieved = "2026-10-11"
+note = "registered 2026-03-01, before data collection"
+
+[source.responses]                       # not published (ethics approval): a salted commitment only
+path = "private/responses.csv"
+salt_file = "private/responses.salt"
+commitment = "90c7aa5b8c5cb84bff498f0bbc0df249fbdb2d090d67259a1f3ed2dee7ea6ac0"
+note = "58 participants, collected 2026-04-02 to 2026-04-20"
+
+[step.anonymize]
+command = "python3 scripts/anonymize.py"
+code = ["scripts/anonymize.py"]
+inputs = ["source:responses"]
+outputs = ["data/responses-anon.csv"]
+
+[step.confirmatory]
+command = "python3 analysis/confirmatory.py"
+code = ["analysis/confirmatory.py"]
+inputs = ["data/responses-anon.csv"]
+outputs = ["results/h1.json"]
+
+[step.exploratory]
+command = "python3 analysis/exploratory.py"
+code = ["analysis/exploratory.py"]
+inputs = ["data/responses-anon.csv"]
+outputs = ["results/age.json"]
+
+[check.h1]
+command = "python3 checks/h1.py"
+code = ["checks/h1.py"]
+inputs = ["results/h1.json"]

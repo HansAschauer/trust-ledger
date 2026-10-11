@@ -1,0 +1,9 @@
+{
+ "n_A": 27,
+ "n_B": 27,
+ "mean_A": 5.589,
+ "mean_B": 6.774,
+ "difference": 1.185,
+ "p_one_sided": 0.0004,
+ "excluded": 4
+}

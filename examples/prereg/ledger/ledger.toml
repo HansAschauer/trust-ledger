@@ -1,0 +1,30 @@
+# A preregistered study (fictitious): a field's own evidence types and checklist, private raw data, and a
+# deviation from the preregistration recorded as an assertion. No Lean, no paper source.
+[project]
+name = "prereg"
+
+[environment]
+files = ["scripts/*.py", "analysis/*.py"]
+
+# evidence types of this field, strongest first (replaces the default E1..E5)
+[[evidence]]
+id = "confirmatory"
+name = "confirmatory, as preregistered"
+
+[[evidence]]
+id = "exploratory"
+name = "exploratory, not preregistered"
+
+[[evidence]]
+id = "assertion"
+name = "assertion"
+
+# what a person attesting a confirmatory result has checked
+[checklist.P1]
+text = "the analysis script does what the preregistered analysis plan says"
+[checklist.P2]
+text = "exclusions are exactly the preregistered ones"
+[checklist.P3]
+text = "every deviation from the preregistration is reported in the paper and in the ledger"
+[checklist.P4]
+text = "the preregistration is dated before data collection"
