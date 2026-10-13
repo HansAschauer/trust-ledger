@@ -1445,7 +1445,11 @@ def cmd_tex(L, args):
         notool += not sts
         checked += bool(sts) and all(x in ("ok", "conditional") for x in sts.values())
     used = [(tex_esc(L.adapters[t]["title"]), k) for t, k in by_tool.items() if k]
-    tool_counts = f"by {used[0][0]}" if len(used) == 1 else "(" + ", ".join(f"{t}: {k}" for t, k in used) + ")"
+    # neutral: which tool checks how many results; what a check is worth is the evidence type's business
+    tool_counts = (f"{used[0][0]} for all of them" if len(used) == 1 and used[0][1] == len(names)
+                   else ", ".join(f"{t} for {k}" for t, k in used))
+    ev_of = [L.ev(L.claims[n]) for n in names]
+    ev_counts = ", ".join(f"{tex_esc(e['name'])}: {ev_of.count(e['id'])}" for e in L.evidence if e["id"] in ev_of)
     attesters = sorted({p for n in names for p, _, _, cur in L.attestation_state(n) if cur})
     nattested = sum(any(cur for *_, cur in L.attestation_state(n)) for n in names)
     levels = ", ".join(f"{cnt[k]} {k}" for k in LEVELS if cnt[k])
@@ -1476,6 +1480,7 @@ def cmd_tex(L, args):
               [reference_tex(lab, allparsed, L.kind_words) or f"\\texttt{{{tex_esc(lab)}}}" for lab in sorted(L.uncovered(), key=unc_pos)]),
           f"\\def\\LedgerNChecked{{{checked}}}", f"\\def\\LedgerNNoTool{{{notool}}}",
           "\\def\\LedgerToolCounts{%s}" % tool_counts,
+          "\\def\\LedgerEvidenceCounts{%s}" % ev_counts,
           f"\\def\\LedgerNAttested{{{nattested}}}",
           "\\def\\LedgerAttesters{%s}" % prose_list([tex_esc(p) for p in attesters]),
           "\\def\\LedgerAttLevels{%s}" % levels,

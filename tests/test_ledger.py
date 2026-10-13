@@ -329,6 +329,8 @@ class Latex(Toy):
 
         text = build("\\PassOptionsToPackage{paper=toy,auto=0}{ledgercheck}\n")
         self.assertIn("Machine-checked statements. An evidence ledger records what each of 5 results", text)
+        self.assertIn("(by evidence type, checked proof: 3, assertion: 2)", text)
+        self.assertIn("Machine checks: Lean for 2, ProVerif for 1", text)
         self.assertIn("given Lemma 2, which the formal proofs assume and do not prove, and which X attests to be a known "
                       "theorem", text)
         self.assertIn("1 of the 5 results is attested by X (1 green)", text)

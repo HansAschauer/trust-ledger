@@ -148,12 +148,12 @@
   \fi}
 % one sentence per topic, each only when it has something to say; the numbers and lists come from the status file
 \newcommand{\ledgercheck@summary}{%
-  An evidence ledger records what each of \LedgerNClaims{} results of this paper rests on.
+  An evidence ledger records what each of \LedgerNClaims{} results of this paper rests on (by evidence type,
+  \LedgerEvidenceCounts).
   \ifnum\LedgerNChecked>0
-    \ifnum\LedgerNChecked=\LedgerNClaims\relax All of them are\else\LedgerNChecked{} of them
-    \ledgercheck@pl{\LedgerNChecked}{is}{are}\fi\ machine-checked \LedgerToolCounts%
+    Machine checks: \LedgerToolCounts%
     \ifnum\LedgerNConditional>0
-      ; \LedgerNConditional{} of these \ledgercheck@pl{\LedgerNConditional}{holds}{hold} given \LedgerHypRefs, which the
+      ; \LedgerNConditional{} of the results \ledgercheck@pl{\LedgerNConditional}{holds}{hold} given \LedgerHypRefs, which the
       formal proofs assume and do not prove%
       \ifnum\LedgerNHypKnown>0
         \ifnum\LedgerNHypKnown=\LedgerNHyp\relax, and which \LedgerHypAttesters{} \ledgercheck@pl{\LedgerNHyp}{attests
