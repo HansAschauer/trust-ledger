@@ -17,14 +17,23 @@
 %
 % Commands
 %   \ledgerappendix    the appendix: status banner, root, explanation, how to check, table
+%   \ledgersummary[heading]   one paragraph for the paper's own text: what is machine-checked, under
+%                      which hypotheses, what is not in the ledger, who attested, the root, and where
+%                      the full ledger is (the appendix if this build has one, else the supplement).
+%                      Default heading "Machine-checked statements"; an empty heading gives none.
 %   \ledgertitlenote   inside \title{...}: a footnote "Evidence ledger root ..." 
 %   \ledgerrootshort   the first 12 hex digits of the root (or "unsealed")
+%
+% A paper that calls \ledgersummary loads the package itself, without options (\usepackage{ledgercheck}):
+% then the summary is empty in a draft and a submission without the ledger, and a release build switches
+% it on from the command line (\PassOptionsToPackage{paper=NAME,auto=0}{ledgercheck} before the class:
+% summary without appendix).
 %
 % Without a root file (a draft) the appendix says "UNSEALED DRAFT" instead of a hash, so a
 % draft cannot be mistaken for a sealed paper. Colour is always accompanied by a word.
 
 \NeedsTeXFormat{LaTeX2e}
-\ProvidesPackage{ledgercheck}[2026/10/11 v0.2 evidence ledger root and status]
+\ProvidesPackage{ledgercheck}[2026/10/13 v0.3 evidence ledger root, status and summary]
 
 \RequirePackage{kvoptions}
 \RequirePackage{xcolor}
@@ -38,6 +47,10 @@
 \newif\ifledgercheck@sealed
 \newif\ifledgercheck@placed
 \newif\ifledgercheck@wastwocolumn
+\newif\ifledgercheck@hasappendix
+\def\ledgercheck@zero{0}
+% the appendix is there with auto=1, or when \ledgerappendix was called on the previous run (noted in the .aux)
+\ifx\ledgercheck@auto\ledgercheck@zero\else\ledgercheck@hasappendixtrue\fi
 % the flag is only reliable here, while the class options are in force (as in leancheck.sty)
 \if@twocolumn\ledgercheck@wastwocolumntrue\else\ledgercheck@wastwocolumnfalse\fi
 \ifx\ledgercheck@paper\@empty\ledgercheck@onfalse\else\ledgercheck@ontrue\fi
@@ -123,6 +136,53 @@
   \ifledgercheck@on\thanks{Evidence ledger root \ledgerrootshort; see the section
     ``Evidence ledger'' at the end of this paper.}\fi}
 
+% ---- summary for the paper's own text --------------------------------------------
+\newcommand{\ledgercheck@pl}[3]{\ifnum#1=1 #2\else #3\fi}
+\newcommand{\ledgersummary}[1][Machine-checked statements]{%
+  \ifledgercheck@on
+    \if\relax\detokenize{#1}\relax\else\paragraph{#1.}\fi
+    \ifledgercheck@sealed\ifdefined\LedgerNChecked\ledgercheck@summary
+    \else{\color{ledgerred}\textbf{OUTDATED}} ledger status file; run \texttt{ledger.py -P \ledgercheck@paper\ tex}.\fi
+    \else{\color{ledgerred}\textbf{UNSEALED DRAFT.}} No ledger root file was found; run
+      \texttt{ledger.py -P \ledgercheck@paper\ tex}.\fi
+  \fi}
+% one sentence per topic, each only when it has something to say; the numbers and lists come from the status file
+\newcommand{\ledgercheck@summary}{%
+  An evidence ledger records what each of \LedgerNClaims{} results of this paper rests on.
+  \ifnum\LedgerNChecked>0
+    \ifnum\LedgerNChecked=\LedgerNClaims\relax All of them are\else\LedgerNChecked{} of them
+    \ledgercheck@pl{\LedgerNChecked}{is}{are}\fi\ machine-checked \LedgerToolCounts%
+    \ifnum\LedgerNConditional>0
+      ; \LedgerNConditional{} of these \ledgercheck@pl{\LedgerNConditional}{holds}{hold} given \LedgerHypRefs, which the
+      formal proofs assume and do not prove%
+      \ifnum\LedgerNHypKnown>0
+        \ifnum\LedgerNHypKnown=\LedgerNHyp\relax, and which \LedgerHypAttesters{} \ledgercheck@pl{\LedgerNHyp}{attests
+        to be a known theorem}{attest to be known theorems} of the cited literature%
+        \else; \LedgerNHypKnown{} of these \LedgerNHyp{} hypotheses are attested as known theorems\fi
+      \fi
+    \fi.
+  \fi
+  \ifnum\LedgerNOpen>0 \LedgerNOpen{} \ledgercheck@pl{\LedgerNOpen}{has}{have} an open item in a machine check.\ \fi
+  \ifnum\LedgerNFailed>0 \LedgerNFailed{} \ledgercheck@pl{\LedgerNFailed}{has}{have} a failed machine check.\ \fi
+  \ifnum\LedgerNNoTool>0 \LedgerNNoTool{} \ledgercheck@pl{\LedgerNNoTool}{has}{have} no machine check.\ \fi
+  \ifnum\LedgerNUncovered>0 \LedgerUncoveredRefs{} \ledgercheck@pl{\LedgerNUncovered}{is}{are} not in the ledger.\ \fi
+  \ifnum\LedgerNAttested>0
+    \ifnum\LedgerNAttested=\LedgerNClaims\relax All \LedgerNClaims{} results are\else\LedgerNAttested{} of the
+    \LedgerNClaims{} results \ledgercheck@pl{\LedgerNAttested}{is}{are}\fi\ attested by \LedgerAttesters{}
+    (\LedgerAttLevels)%
+    \ifnum\LedgerNSignedAtt>0 \ifnum\LedgerNSignedAtt=\LedgerNAtt\relax, every attestation signed%
+      \else, \LedgerNSignedAtt{} of \LedgerNAtt{} attestations signed\fi\fi.
+  \else None of them is attested yet.
+  \fi
+  \ifnum\LedgerNStale>0 \LedgerNStale{} \ledgercheck@pl{\LedgerNStale}{has}{have} only attestations made before its
+    statement last changed.\ \fi
+  The ledger is sealed by its root hash \texttt{\LedgerRootShort}\ldots\footnote{SHA-256
+    \texttt{\LedgerRootA\allowbreak\LedgerRootB\allowbreak\LedgerRootC\allowbreak\LedgerRootD}.}, which covers
+  the evidence, the statements as typeset here and the source of this paper;
+  \ifledgercheck@hasappendix the section ``Evidence ledger'' at the end of this paper lists every result, explains
+  the attestation levels and how to check the root\else the full ledger, what the attestation levels mean and how
+  to check the root: \LedgerSupplement\fi.}
+
 % ---- appendix ---------------------------------------------------------------
 \newcommand{\ledgercheck@banner}{%
   Of \LedgerNClaims{} results in the ledger:
@@ -139,6 +199,8 @@
 \newcommand{\ledgerappendix}{%
   \ledgercheck@placedtrue
   \ifledgercheck@on
+  % \csname: harmless (\relax) in a later run without the package
+  \if@filesw\immediate\write\@auxout{\string\csname\space ledgercheck@hasappendixtrue\string\endcsname}\fi
   \ifledgercheck@wastwocolumn\clearpage\onecolumn\fi
   \section*{Evidence ledger}
   \ifledgercheck@sealed
@@ -215,6 +277,5 @@
   \fi
   \ifledgercheck@wastwocolumn\clearpage\twocolumn\fi
   \fi}
-\def\ledgercheck@zero{0}
 \AtEndDocument{\ifledgercheck@on\ifledgercheck@placed\else
   \ifx\ledgercheck@auto\ledgercheck@zero\else\ledgerappendix\fi\fi\fi}

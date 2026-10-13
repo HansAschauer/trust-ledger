@@ -300,7 +300,44 @@ class Latex(Toy):
         self.assertIn("Evidence ledger", text)
         self.assertIn("Hypotheses", text)
         self.assertIn("given [H1]", text)
-        self.assertRegex(" ".join(text.split()), r"not proved\. 0 of 1 attestations")   # sentences of the banner apart
+        self.assertRegex(" ".join(text.split()), r"not proved\. 0 of 2 attestations")   # sentences of the banner apart
+
+    @unittest.skipUnless(shutil.which("pdflatex"), "needs pdflatex")
+    def test_summary_paragraph(self):
+        """\\ledgersummary in the paper's text: switched on by options passed before the class, empty without them;
+        it points to the appendix when the build has one, else to the supplement."""
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "lem-succ", "--person", "X", "--level", "green"])
+        lg.main(["-C", str(self.p), "-P", "toy", "tex"])
+        import os
+        env = dict(os.environ, TEXINPUTS=str(ROOT / "tex") + "//:")
+
+        def build(pre):
+            (self.p / "paper" / "min.tex").write_text(
+                pre + "\\documentclass{article}\n\\usepackage{ledgercheck}\n"
+                "\\newtheorem{lemma}{Lemma}\\newtheorem{theorem}{Theorem}\n\\begin{document}\\input{chapters/results}\n"
+                "\\ledgersummary\n\\end{document}\n")
+            for f in (self.p / "paper").glob("min.*"):
+                if f.suffix != ".tex":
+                    f.unlink()
+            for _ in range(2):
+                r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "min.tex"],
+                                   cwd=self.p / "paper", env=env, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout[-800:])
+            out = subprocess.run(["pdftotext", "min.pdf", "-"], cwd=self.p / "paper", capture_output=True, text=True).stdout
+            return " ".join(out.split())
+
+        text = build("\\PassOptionsToPackage{paper=toy,auto=0}{ledgercheck}\n")
+        self.assertIn("Machine-checked statements. An evidence ledger records what each of 5 results", text)
+        self.assertIn("given Lemma 2, which the formal proofs assume and do not prove, and which X attests to be a known "
+                      "theorem", text)
+        self.assertIn("1 of the 5 results is attested by X (1 green)", text)
+        self.assertIn("the supplementary repository of this paper", text)
+        self.assertNotIn("Root hash", text)                          # auto=0: no appendix
+        text = build("\\PassOptionsToPackage{paper=toy}{ledgercheck}\n")
+        self.assertIn("the section “Evidence ledger” at the end of this paper", text)
+        self.assertIn("Root hash", text)
+        self.assertNotIn("Machine-checked statements", build(""))   # no options: a submission without the ledger
 
     def test_rows_follow_the_compiled_document_not_the_file_order(self):
         # a label that sits in main.tex AFTER the \\input line is later in the document than the chapter's labels
@@ -517,6 +554,18 @@ class Signing(Toy):
         self.assertIn("{signed}", st)
         self.assertIn("\\LedgerKeyRow{Alice}{SHA256:", st)
         self.assertIn("\\def\\LedgerNSignedAtt{1}", st)
+
+    def test_signed_hypothesis_attestation_is_shown_signed(self):
+        k = self.signed_setup()
+        self.main("attest", "--hypothesis", "Toy.BanachProp", "--person", "Alice", "--level", "green", "--sign", str(k),
+                  "--key", "alice")
+        self.main("-P", "toy", "tex")
+        st = (self.p / "paper" / "ledger" / "ledger-toy-status.tex").read_text()
+        hyps = st[st.index("\\def\\LedgerHyps"):st.index("\\def\\LedgerNSignedAtt")]
+        self.assertIn("{current}{signed}", hyps)
+        self.assertIn("\\def\\LedgerNSignedAtt{2}", st)
+        self.assertIn("\\def\\LedgerNAtt{2}", st)
+        self.assertIn("\\def\\LedgerHypAttesters{Alice}", st)
 
 
 PROVERIF_OUTPUT = """Process 0 (that is, the initial process): ...

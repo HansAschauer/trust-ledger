@@ -323,6 +323,12 @@ KIND_WORDS = {"theorem": "Theorem", "proposition": "Proposition", "lemma": "Lemm
               "example": "Example"}
 
 
+def prose_list(items):
+    """'a', 'a and b', 'a, b and c' (LaTeX: a tie before nothing, the items are typeset as given)."""
+    items = list(items)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1] if items else ""
+
+
 def reference_tex(label, parsed, extra_words=None):
     """How a reader cites the labelled item: 'Lemma~\\ref{l}' or 'Equation~(\\ref{l})'. The type word comes from the
     environment in the source, not from the counter (theorem-like environments often share one). `extra_words`
@@ -1222,11 +1228,12 @@ class Ledger:
         cur = self.cspec.get(n)
         return [(p, a.get("level"), a.get("date", ""), a.get("bound") == cur) for p, a in sorted(latest.items())]
 
-    def signature_of(self, n, person):
-        """Signature state of the latest counted attestation by `person` on claim n."""
+    def signature_of(self, n, person, target="claim"):
+        """Signature state of the latest counted attestation by `person` on claim n (target="hypothesis": on
+        hypothesis n)."""
         latest = None
         for a in self.attestations:
-            if a.get("claim") == n and a.get("person", "?") == person and a.get("_sig") not in ("invalid", "revoked"):
+            if a.get(target) == n and a.get("person", "?") == person and a.get("_sig") not in ("invalid", "revoked"):
                 latest = a
         return latest.get("_sig", "unsigned") if latest else "unsigned"
 
@@ -1406,14 +1413,16 @@ def cmd_tex(L, args):
             + (f" {{\\scriptsize({tex_esc(n)})}}" if seen[lab] > 1 and lab != n else "")
         rows.append(f"\\LedgerRow{{{res}}}{{{tex_esc(L.ev(c))}}}{{{L.stmt[n][1]}}}"
                     f"{{{cells}}}{{{len(L.register[n])}}}{{{att}}}")
-    counted = [(n, p) for n in names for p, *_ in L.attestation_state(n)]
-    nsigned = sum(L.signature_of(n, p) == "signed" for n, p in counted)
+    counted = [(n, p, "claim") for n in names for p, *_ in L.attestation_state(n)]
+    counted += [(h, p, "hypothesis") for h in L.scope_hyps for p, *_ in L.hypothesis_state(h)]
+    nsigned = sum(L.signature_of(n, p, t) == "signed" for n, p, t in counted)
     keyrows = []
     for i, q in sorted(L.payload.items()):
         if q["kind"] == "key":
             kc = q["content"]
             keyrows.append(f"\\LedgerKeyRow{{{tex_esc(kc['person'])}}}{{{tex_esc(fingerprint(kc['public']))}}}"
                            f"{{{tex_esc(kc.get('source') or 'paper')}}}{{{'revoked ' + tex_esc(kc['revoked']) if kc.get('revoked') else ''}}}%")
+    allparsed_h = [x for v in L.parsed.values() for x in v]
     hrows = []
     for h in sorted(L.scope_hyps, key=lambda h: hkey[h]):
         meta = L.hypotheses.get(h, {})
@@ -1421,11 +1430,30 @@ def cmd_tex(L, args):
         ref = (reference_tex(lab, [x for v in L.parsed.values() for x in v], L.kind_words) if lab else None) or "---"
         hst = L.hypothesis_state(h)
         att = ("\\LedgerAtts{" + "\\\\[2pt]".join(
-            f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}{{unsigned}}"
+            f"\\LedgerAtt{{{lvl}}}{{{tex_esc(p)}}}{{{tex_esc(date)}}}{{{'current' if cur else 'stale'}}}"
+            f"{{{L.signature_of(h, p, 'hypothesis')}}}"
             for p, lvl, date, cur in hst) + "}") if hst else "\\LedgerNoAtt"
         hrows.append(f"\\LedgerHypRow{{{hkey[h]}}}{{{ref}}}{{\\texttt{{{tex_esc(h)}}}}}{{{tex_esc(', '.join(meta.get('cites', [])) or '---')}}}{{{att}}}%")
     nknown = sum(L.known_theorem(h) for h in L.scope_hyps)
-    allparsed = [x for v in L.parsed.values() for x in v]
+    # for \\ledgersummary, a paragraph in the paper's own text: counts and ready-made prose lists
+    checked, notool, by_tool = 0, 0, {t: 0 for t in tools}
+    for n in names:
+        sts = {t: L.adapter_state(t, n)[0] for t in tools}
+        sts = {t: x for t, x in sts.items() if x != "none"}
+        for t, x in sts.items():
+            by_tool[t] += x in ("ok", "conditional")
+        notool += not sts
+        checked += bool(sts) and all(x in ("ok", "conditional") for x in sts.values())
+    used = [(tex_esc(L.adapters[t]["title"]), k) for t, k in by_tool.items() if k]
+    tool_counts = f"by {used[0][0]}" if len(used) == 1 else "(" + ", ".join(f"{t}: {k}" for t, k in used) + ")"
+    attesters = sorted({p for n in names for p, _, _, cur in L.attestation_state(n) if cur})
+    nattested = sum(any(cur for *_, cur in L.attestation_state(n)) for n in names)
+    levels = ", ".join(f"{cnt[k]} {k}" for k in LEVELS if cnt[k])
+    hyp_refs = prose_list([reference_tex(L.hypotheses.get(h, {}).get("label"), allparsed_h, L.kind_words)
+                           if L.hypotheses.get(h, {}).get("label") else f"\\texttt{{{tex_esc(h)}}}"
+                           for h in sorted(L.scope_hyps, key=lambda h: hkey[h])])
+    hyp_attesters = sorted({p for h in L.scope_hyps for p, lvl, _, cur in L.hypothesis_state(h) if cur and lvl == "green"})
+    allparsed = allparsed_h
     flat = next(iter(L.flat.values()), "")
 
     def unc_pos(lab):
@@ -1444,6 +1472,15 @@ def cmd_tex(L, args):
               f"{reference_tex(lab, allparsed, L.kind_words) or tex_esc(lab)} ({', '.join(tex_esc(x) for x in ns)})"
               for lab, ns in sorted(L.split_labels().items(), key=lambda t: unc_pos(t[0]))),
           "\\def\\LedgerUncovered{%s}" % ", ".join(uncovered_refs),
+          "\\def\\LedgerUncoveredRefs{%s}" % prose_list(
+              [reference_tex(lab, allparsed, L.kind_words) or f"\\texttt{{{tex_esc(lab)}}}" for lab in sorted(L.uncovered(), key=unc_pos)]),
+          f"\\def\\LedgerNChecked{{{checked}}}", f"\\def\\LedgerNNoTool{{{notool}}}",
+          "\\def\\LedgerToolCounts{%s}" % tool_counts,
+          f"\\def\\LedgerNAttested{{{nattested}}}",
+          "\\def\\LedgerAttesters{%s}" % prose_list([tex_esc(p) for p in attesters]),
+          "\\def\\LedgerAttLevels{%s}" % levels,
+          "\\def\\LedgerHypRefs{%s}" % hyp_refs,
+          "\\def\\LedgerHypAttesters{%s}" % prose_list([tex_esc(p) for p in hyp_attesters]),
           "\\def\\LedgerKeys{%"] + keyrows + ["}"]
     cl += [f"\\def\\LedgerN{k}{{{v}}}" for k, v in (("Green", cnt["green"]), ("Yellow", cnt["yellow"]),
            ("Conj", cnt["conjecture"]), ("Stale", cnt["stale"]), ("None", cnt["none"]),

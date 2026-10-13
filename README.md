@@ -32,7 +32,8 @@ described in a paper in preparation.
 * `lean/Dump.lean`: reads a Lean project and writes out its theorems and definitions, the exact proof objects
   the Lean checker accepted, and the axioms they use, so that they can be fingerprinted. `adapters/lean.py`
   turns its output into an adapter dump.
-* `tex/ledgercheck.sty`: prints the root and a status appendix in the paper from two generated files.
+* `tex/ledgercheck.sty`: prints the root, a status appendix and a summary paragraph in the paper from two generated
+  files.
 * `adapters/`: extractors that write the generic adapter dump (`docs/FORMAT.md` 2.6): `lean.py`
   (Lean, via `Dump.lean`) and `proverif.py` (ProVerif models). An adapter can be written in any language;
   the core knows no tool. `dvc_steps.py` turns the stages of a DVC pipeline (`dvc.yaml`) into `[step.*]`
@@ -99,6 +100,17 @@ paper source (e.g. in a publish script), load it at the end of the preamble; a p
 `\RequirePackage` before `\documentclass` collides with classes that define `\toprule`:
 
     pdflatex '\AddToHook{begindocument/before}{\RequirePackage[paper=NAME]{ledgercheck}}\input{main}'
+
+For the paper's own text, `\ledgersummary[heading]` typesets one paragraph from the same files: how many
+results are machine-checked and by which tool, under which hypotheses (and who attests them as known
+theorems), what is not in the ledger, who attested what and whether it is signed, the short root with the
+full hash in a footnote, and where to find the rest (the appendix if the build has one, else the supplement).
+A paper that uses it loads `\usepackage{ledgercheck}` itself, without options, so drafts and a submission
+without the ledger show nothing; a publish script switches it on with
+`\PassOptionsToPackage{paper=NAME,auto=0}{ledgercheck}` before the class (summary only) or `paper=NAME`
+(summary and appendix):
+
+    pdflatex '\PassOptionsToPackage{paper=NAME,auto=0}{ledgercheck}\input{main}'
 
 The table uses plain `tabular`s in chunks because `longtable`, `supertabular` and `p`-columns fail in
 the two-column `quantumarticle` class.
