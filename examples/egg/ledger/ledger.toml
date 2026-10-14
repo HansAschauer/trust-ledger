@@ -1,0 +1,41 @@
+# A short paper with every kind of evidence the ledger records, and attestations of every kind.
+# The Lean side (formal/Egg.lean, checked with Mathlib) enters through a hand-made Dump.lean output, so that
+# the example runs without Lean; the kitchen data are synthetic (scripts/synthesize.py).
+[project]
+name = "egg"
+
+[adapter.lean]
+prefix = "lean:"
+dump = "lean.json"
+extract = "python3 ../../adapters/lean.py --from ledger/lean-dump.json"
+# in a real project: extract = "ledger/dump.sh | python3 adapters/lean.py"
+
+[environment]
+files = ["formal/*.lean", "scripts/*.py"]
+
+[paper.egg]
+main = "paper/main.tex"
+texinputs = ["paper", "../../tex"]
+authors = ["cook"]
+supplement = "the directory examples/egg of the trust-ledger repository"
+verify = "python3 ../../ledger.py -P egg verify"
+
+[generated]
+dirs = ["paper/ledger"]
+
+# what an attesting person can tick
+[checklist.C1]
+text = "compared the statement in the paper with the formal statement or check it rests on"
+[checklist.C2]
+text = "re-ran the machine check myself"
+[checklist.C3]
+text = "checked the numbers and units in the text"
+[checklist.H1]
+text = "found the cited statement in the source"
+applies = "hypothesis"
+[checklist.H2]
+text = "compared it with the formal definition"
+applies = "hypothesis"
+[checklist.H3]
+text = "checked that its conditions match the use here"
+applies = "hypothesis"

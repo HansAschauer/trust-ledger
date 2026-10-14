@@ -1,0 +1,27 @@
+# The kitchen: data, the steps from data to result, and a check that the result supports obs:kitchen.
+
+[source.probe]
+path = "data/probe.csv"
+note = "centre temperature every 30 s; synthetic: made by scripts/synthesize.py for this example"
+
+[source.tasting]                    # private in a real project: only the salted commitment would be published
+path = "private/tasting.txt"
+salt_file = "private/tasting.salt"
+commitment = "e4bf363bab4afea77c182faa1c8af7fbae4356d0d4052b14d207f6e6b18ba2c8"
+note = "notes of the three tasters"
+
+[step.measure]
+manual = "semi-axes of the egg measured with a calliper (0.1 mm); fridge and bath temperature read off"
+person = "B. Taster"
+outputs = ["data/egg.json"]
+
+[step.fit]
+command = "python3 scripts/fit.py"
+code = ["scripts/fit.py", "scripts/egg.py"]
+inputs = ["source:probe", "data/egg.json"]
+outputs = ["results/fit.json"]
+
+[check.kitchen]
+command = "python3 checks/kitchen.py"
+code = ["checks/kitchen.py"]
+inputs = ["results/fit.json"]

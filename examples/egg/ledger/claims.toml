@@ -1,0 +1,54 @@
+# The results of paper/main.tex. Statements are taken from the paper by label.
+
+[claim.scaling]
+label = "lem:scaling"
+paper = "egg"
+evidence = "E1"
+lean = ["Egg.scaling"]
+
+[claim.colder]
+label = "lem:colder"
+paper = "egg"
+evidence = "E1"
+lean = ["Egg.colder"]
+
+[claim.fridge]
+label = "thm:fridge"
+paper = "egg"
+evidence = "E1"
+lean = ["Egg.fridge"]
+cites = ["buay"]
+
+[claim.kitchen]
+label = "obs:kitchen"
+paper = "egg"
+evidence = "E4"
+files = ["results/fit.json"]
+checks = ["kitchen"]
+
+[claim.taste]
+label = "obs:taste"
+paper = "egg"
+evidence = "E5"
+sources = ["tasting"]
+
+[claim.six]
+label = "conj:six"
+paper = "egg"
+evidence = "E5"
+
+[assertion.six-taste]
+claim = "six"
+text = "A matter of taste; tested by A. Cook on Sundays, never measured."
+
+[citation.buay]
+key = "Buay2006"
+statement = "First-order cooking time t = R^2/(pi^2 alpha) ln(2(Tb - T0)/(Tb - Tc)) for the centre of a sphere."
+source = "eq. (11)"
+
+# Theorem thm:fridge is proved in Lean given Egg.FirstOrder, which the paper states as Lemma lem:firstorder
+# and cites from Buay et al.
+[hypothesis."Egg.FirstOrder"]
+label = "lem:firstorder"
+paper = "egg"
+cites = ["buay"]

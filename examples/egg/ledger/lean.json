@@ -1,0 +1,193 @@
+{
+ "adapter": "lean",
+ "env_hash": "7bb3a034a7c50b23444b49d209f445f2eb44916eca6747bfe2dae8cdde24332e",
+ "environment": {
+  "toolchain": "leanprover/lean4:v4.34.1"
+ },
+ "labels": {
+  "assumes": "checked, given",
+  "axioms": "extra axioms",
+  "ok": "checked",
+  "sorry": "contains sorry"
+ },
+ "legend": "checked = accepted by the Lean kernel with the standard axioms only; checked, given [Hk] = in addition the hypothesis Hk of the Hypotheses table is assumed, not proved; extra axioms = the proof uses an axiom beyond the standard ones; contains sorry = the proof is unfinished.",
+ "nodes": {
+  "Egg.FirstOrder": {
+   "content": {
+    "assumptions": [],
+    "axioms": [],
+    "kind": "def",
+    "name": "Egg.FirstOrder",
+    "sorry": false,
+    "type": "(ℝ → ℝ → ℝ → ℝ → ℝ → ℝ) → Prop",
+    "value": "fun cook => ∀ (R α Tb T0 Tc : ℝ), 0 < R → 0 < α → T0 < Tc → Tc < Tb → cook R α Tb T0 Tc = Egg.time R α Tb T0 Tc"
+   },
+   "deps": [
+    "Egg.time"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": false,
+   "spec": {
+    "kind": "def",
+    "name": "Egg.FirstOrder",
+    "type": "(ℝ → ℝ → ℝ → ℝ → ℝ → ℝ) → Prop",
+    "type_term": "",
+    "value": "fun cook => ∀ (R α Tb T0 Tc : ℝ), 0 < R → 0 < α → T0 < Tc → Tc < Tb → cook R α Tb T0 Tc = Egg.time R α Tb T0 Tc",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Egg.time"
+   ],
+   "status": "ok",
+   "word": "ok"
+  },
+  "Egg.colder": {
+   "content": {
+    "assumptions": [],
+    "axioms": [
+     "propext",
+     "Classical.choice",
+     "Quot.sound"
+    ],
+    "kind": "theorem",
+    "name": "Egg.colder",
+    "proof": "by unfold time; apply mul_lt_mul_of_pos_left _ hc; apply Real.log_lt_log ...",
+    "sorry": false,
+    "type": "∀ (R α Tb T0 T0' Tc : ℝ), 0 < R → 0 < α → T0' < T0 → T0 < Tc → Tc < Tb → Egg.time R α Tb T0 Tc < Egg.time R α Tb T0' Tc"
+   },
+   "deps": [
+    "Egg.time"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": true,
+   "spec": {
+    "kind": "theorem",
+    "name": "Egg.colder",
+    "type": "∀ (R α Tb T0 T0' Tc : ℝ), 0 < R → 0 < α → T0' < T0 → T0 < Tc → Tc < Tb → Egg.time R α Tb T0 Tc < Egg.time R α Tb T0' Tc",
+    "type_term": "",
+    "value": "",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Egg.time"
+   ],
+   "status": "ok",
+   "word": "ok"
+  },
+  "Egg.fridge": {
+   "content": {
+    "assumptions": [
+     "Egg.FirstOrder"
+    ],
+    "axioms": [
+     "propext",
+     "Classical.choice",
+     "Quot.sound"
+    ],
+    "kind": "theorem",
+    "name": "Egg.fridge",
+    "proof": "by rw [h .., h ..]; unfold time; rw [← mul_sub, ← Real.log_div]; ...",
+    "sorry": false,
+    "type": "∀ (cook : ℝ → ℝ → ℝ → ℝ → ℝ → ℝ), Egg.FirstOrder cook → ∀ (R α Tb T0 T0' Tc : ℝ), 0 < R → 0 < α → T0' < T0 → T0 < Tc → Tc < Tb → cook R α Tb T0' Tc - cook R α Tb T0 Tc = R ^ 2 / (π ^ 2 * α) * Real.log ((Tb - T0') / (Tb - T0))"
+   },
+   "deps": [
+    "Egg.FirstOrder",
+    "Egg.time"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [
+    "hyp:Egg.FirstOrder"
+   ],
+   "result": true,
+   "spec": {
+    "kind": "theorem",
+    "name": "Egg.fridge",
+    "type": "∀ (cook : ℝ → ℝ → ℝ → ℝ → ℝ → ℝ), Egg.FirstOrder cook → ∀ (R α Tb T0 T0' Tc : ℝ), 0 < R → 0 < α → T0' < T0 → T0 < Tc → Tc < Tb → cook R α Tb T0' Tc - cook R α Tb T0 Tc = R ^ 2 / (π ^ 2 * α) * Real.log ((Tb - T0') / (Tb - T0))",
+    "type_term": "",
+    "value": "",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Egg.FirstOrder",
+    "Egg.time"
+   ],
+   "status": "conditional",
+   "word": "assumes"
+  },
+  "Egg.scaling": {
+   "content": {
+    "assumptions": [],
+    "axioms": [
+     "propext",
+     "Classical.choice",
+     "Quot.sound"
+    ],
+    "kind": "theorem",
+    "name": "Egg.scaling",
+    "proof": "by unfold time; ring",
+    "sorry": false,
+    "type": "∀ (k R α Tb T0 Tc : ℝ), Egg.time (k * R) α Tb T0 Tc = k ^ 2 * Egg.time R α Tb T0 Tc"
+   },
+   "deps": [
+    "Egg.time"
+   ],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": true,
+   "spec": {
+    "kind": "theorem",
+    "name": "Egg.scaling",
+    "type": "∀ (k R α Tb T0 Tc : ℝ), Egg.time (k * R) α Tb T0 Tc = k ^ 2 * Egg.time R α Tb T0 Tc",
+    "type_term": "",
+    "value": "",
+    "value_term": ""
+   },
+   "spec_deps": [
+    "Egg.time"
+   ],
+   "status": "ok",
+   "word": "ok"
+  },
+  "Egg.time": {
+   "content": {
+    "assumptions": [],
+    "axioms": [],
+    "kind": "def",
+    "name": "Egg.time",
+    "sorry": false,
+    "type": "ℝ → ℝ → ℝ → ℝ → ℝ → ℝ",
+    "value": "fun R α Tb T0 Tc => R ^ 2 / (π ^ 2 * α) * Real.log (2 * (Tb - T0) / (Tb - Tc))"
+   },
+   "deps": [],
+   "info": {},
+   "kind": "lean-decl",
+   "register": [],
+   "result": false,
+   "spec": {
+    "kind": "def",
+    "name": "Egg.time",
+    "type": "ℝ → ℝ → ℝ → ℝ → ℝ → ℝ",
+    "type_term": "",
+    "value": "fun R α Tb T0 Tc => R ^ 2 / (π ^ 2 * α) * Real.log (2 * (Tb - T0) / (Tb - Tc))",
+    "value_term": ""
+   },
+   "spec_deps": [],
+   "status": "ok",
+   "word": "ok"
+  }
+ },
+ "title": "Lean",
+ "version": "0.2.0",
+ "words": [
+  "ok",
+  "assumes",
+  "axioms",
+  "sorry"
+ ]
+}

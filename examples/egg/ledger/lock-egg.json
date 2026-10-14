@@ -1,0 +1,185 @@
+{
+ "claims": {
+  "colder": {
+   "register": [],
+   "spec": "7833112ec0de86037916d2d6c1a09940c194e92c919ab5f55cbce2a6d2412b3b"
+  },
+  "fridge": {
+   "register": [
+    "hyp:Egg.FirstOrder",
+    "hyp:cited:buay"
+   ],
+   "spec": "b68e1709a748872f73fd07dc47198dc09282c86cf22bdd56b4c6d770c3b7b6fd"
+  },
+  "kitchen": {
+   "register": [
+    "data:probe",
+    "manual:measure"
+   ],
+   "spec": "63b3f687eb1ad812845a887e9f9108cadb02b698f231ab2255fc800d65fffec5"
+  },
+  "scaling": {
+   "register": [],
+   "spec": "b4ef589321efe8fa413f4c8db4ecc1a11bcda83fcd8ff343cbc92f38edd584f9"
+  },
+  "six": {
+   "register": [
+    "assertion:six-taste",
+    "evidence:none"
+   ],
+   "spec": "c0a164bf57c9e5e45d0e2ce21632035d322cf581728629f1079b8b2bbc542172"
+  },
+  "taste": {
+   "register": [
+    "data:tasting"
+   ],
+   "spec": "ce5f6cbe20cb30fa3276899c1263b32da89143bf974483f66b5e6792c352450b"
+  }
+ },
+ "format": "0.2.0",
+ "hypotheses": {
+  "Egg.FirstOrder": {
+   "spec": "2f2a0dc493afe20c5848e92c95fc2eafcf05a0d607c5fbbf9250ab983d4f2e14"
+  }
+ },
+ "nodes": {
+  "assert:six-taste": {
+   "full": "5ee3dd786c61ce66dec6518f772a238a76372dad93e9e4804266b77c3accc18e",
+   "kind": "assertion"
+  },
+  "attest:0": {
+   "full": "8443c94d8d067087f1ecab344614574a2ca04375db22a1652de624ac2d0c9a68",
+   "kind": "attestation"
+  },
+  "attest:1": {
+   "full": "3d94b8bb0825750b060670db422d1ef77e3f2b3ef2ba6db2732fd7b0b9a1c701",
+   "kind": "attestation"
+  },
+  "attest:2": {
+   "full": "3d700fca8f59fddc50cbad4506db5fde7c92057c97e8ed9c2d169e658077dc22",
+   "kind": "attestation"
+  },
+  "attest:3": {
+   "full": "df213066d9c06fcf71a412881f9c93e8abb0e5251be3dcff75d22c67d23af1b4",
+   "kind": "attestation"
+  },
+  "attest:4": {
+   "full": "48c810140a7f534e3e98d423c72ddc3a931580bc9d00edcce2fd7e17d9de1b9c",
+   "kind": "attestation"
+  },
+  "attest:5": {
+   "full": "1a5de2d2f27c63ff63f1530e460c48d10bf7b95184342a2cc1a962f656a6ff83",
+   "kind": "attestation"
+  },
+  "attest:6": {
+   "full": "aee4ec73c1f2fb300f205d65a1dd5e57c67d6e4c728fda6e6756ecd8e1e1b060",
+   "kind": "attestation"
+  },
+  "attest:7": {
+   "full": "166b199efab6834384a51f39b67ee44f6ea1726541235bc9fe8abc378ba95ff5",
+   "kind": "attestation"
+  },
+  "attest:8": {
+   "full": "c2edc7f3a1ab67dbfc96884f93b64319814545d2ee2458a6a638661b89778854",
+   "kind": "attestation"
+  },
+  "check:kitchen": {
+   "full": "896c2c42d425bda392918b21f185e66997e0de8aefb2c2b65e276046b4c8fcd3",
+   "kind": "check"
+  },
+  "cite:buay": {
+   "full": "2d1403f5d5fb622a098a7fc1f0de7d2c359a4fc75ad35c608c83c878d0dae619",
+   "kind": "citation"
+  },
+  "claim:colder": {
+   "full": "54db077f2874e28df98f5eefdae9db3272e753039d7388a882e9092b8ac76564",
+   "kind": "claim"
+  },
+  "claim:fridge": {
+   "full": "0c93b389953800e9444d987f4ebb5dcb0bf2f538c78f9657bccbea5ddf5c1896",
+   "kind": "claim"
+  },
+  "claim:kitchen": {
+   "full": "d13e12f6665b5667f79adb82b80b4513c5ae0388cc48effa1b5e93172a17545c",
+   "kind": "claim"
+  },
+  "claim:scaling": {
+   "full": "4203fb5d38d2df2d36cb268b2a083f7202a72b21687f40de47e6e3011a9768b8",
+   "kind": "claim"
+  },
+  "claim:six": {
+   "full": "6c928cd262181db6d7bd8b835355f1208b0158e065742908d014e95a0f263066",
+   "kind": "claim"
+  },
+  "claim:taste": {
+   "full": "cd91759ce413bf4361915250ccbfffd1cdc8596aa504ce51a25f0bf4038a564c",
+   "kind": "claim"
+  },
+  "env:egg": {
+   "full": "890c8beffb883fc49776b4a25f8baa0c7c4400af1ca37d0cd37b5348d755c6cd",
+   "kind": "environment"
+  },
+  "file:data/egg.json": {
+   "full": "2debd50ccc2df65049835d06677ad54f2075bb6ae2ef25760a70a2ca3fe6f51d",
+   "kind": "file"
+  },
+  "file:results/fit.json": {
+   "full": "85e535f56d85d48b25fc5c68b9ef222016bc1d94f52358f7e111321e9420cb40",
+   "kind": "file"
+  },
+  "hyp:Egg.FirstOrder": {
+   "full": "8997cd1e8c20557629edd19f64934f61cf3d012c4ad2c7ad06236d3d1d63f1b8",
+   "kind": "hypothesis"
+  },
+  "key:cook": {
+   "full": "001f173ed10b7c0448b735433c77a90072a4ef1a19227dacecddecc0b979fd5f",
+   "kind": "key"
+  },
+  "key:reader": {
+   "full": "ea70c344300283c50b2200d3dbabc52aca1b03437e8e0b9b8115442b9c13d0c7",
+   "kind": "key"
+  },
+  "lean:Egg.FirstOrder": {
+   "full": "97f0b429ddbb91dfbb31af972cdc2d5481cd10c0f983082c27a64628d38af6b2",
+   "kind": "lean-decl"
+  },
+  "lean:Egg.colder": {
+   "full": "3ec821c0b2ffabd82188df054fc264a92bc4e412fcd36f5c92e81096c4231739",
+   "kind": "lean-decl"
+  },
+  "lean:Egg.fridge": {
+   "full": "90ed4a570ab6ac3408f8ad4ea37da14e53e43b566587ffded10fbb049f549204",
+   "kind": "lean-decl"
+  },
+  "lean:Egg.scaling": {
+   "full": "387f35e2cec05b497e91e6b1878ce54d2e943d6b6c4778e096a2e1f23c4a68fb",
+   "kind": "lean-decl"
+  },
+  "lean:Egg.time": {
+   "full": "4a926f4dec2fc1bdd40282ab96c8ffe24cd89d2394c3b7efd06e33882f98ae9b",
+   "kind": "lean-decl"
+  },
+  "paper:egg": {
+   "full": "4962be1f822e3e8895d4f525742213432e8712fd59b221a8079a602bb2a21948",
+   "kind": "paper-source"
+  },
+  "source:probe": {
+   "full": "7058fba3dd75865c3a510caf5288543640d35b1ce655cd0a74db00d9c8c80a80",
+   "kind": "source"
+  },
+  "source:tasting": {
+   "full": "5d7d48f1a2a5e8e29e2211017aa5bb933f1fd4345224aa2dd8683f25c21fdb1a",
+   "kind": "source"
+  },
+  "step:fit": {
+   "full": "b5ece7370bf987890e040bf9c71d9c02152838779703786d1b9af6ebad251dee",
+   "kind": "step"
+  },
+  "step:measure": {
+   "full": "f784d0f7ed559c2fceca62b97c03334268196e076efc4e4ce98e1710b12fd636",
+   "kind": "step"
+  }
+ },
+ "root": "d951417570fa736fa0cdc2e2a8422d7032cecd03d328e41ad34463fcb249eb9a",
+ "tool": "0.2.0"
+}

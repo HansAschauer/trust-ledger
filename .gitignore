@@ -5,4 +5,18 @@ examples/*/ledger/keys.toml
 examples/*/ledger/lock*.json
 examples/*/paper/ledger/
 examples/*/review/
-examples/*/private/
+examples/*/private/*
+# the egg example ships its attestations, keys and lock (its private keys stay in private/)
+!examples/egg/ledger/attestations.toml
+!examples/egg/ledger/keys.toml
+!examples/egg/ledger/lock-egg.json
+examples/*/paper/*.aux
+examples/*/paper/*.bbl
+examples/*/paper/*.blg
+examples/*/paper/*.fdb_latexmk
+examples/*/paper/*.fls
+examples/*/paper/*.log
+examples/*/paper/*.out
+# ...and, as a demonstration only, the data behind its commitment (a real project never publishes these)
+!examples/egg/private/tasting.txt
+!examples/egg/private/tasting.salt

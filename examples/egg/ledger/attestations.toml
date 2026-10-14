@@ -1,0 +1,82 @@
+
+[[attestation]]
+claim = "colder"
+person = "B. Taster"
+date = "2026-10-14"
+level = "green"
+reason = ""
+checklist = ["C1"]
+bound = "e331fa328c2d04c964982a5855f72ef1527ca92bf950b3d95c9ed9c88ece03af"
+
+[[attestation]]
+claim = "scaling"
+person = "A. Cook"
+date = "2026-10-14"
+level = "green"
+reason = ""
+checklist = ["C1", "C2"]
+bound = "b4ef589321efe8fa413f4c8db4ecc1a11bcda83fcd8ff343cbc92f38edd584f9"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQOcJtyzjsPmGRta6vC/JP1AceO4cbfJjfeJIsl\n7NGFTObdyyACZI6AANqq+qDR/MIl7aInI4aqF+8fCt/lEPRQM=\n-----END SSH SIGNATURE-----\n"
+
+[[attestation]]
+claim = "fridge"
+person = "A. Cook"
+date = "2026-10-14"
+level = "green"
+reason = ""
+checklist = ["C1", "C2", "C3"]
+bound = "b68e1709a748872f73fd07dc47198dc09282c86cf22bdd56b4c6d770c3b7b6fd"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQAiJRiCxhi0UrXrrP+GoXRT2LiNXk3fOCBbxO0\nO3/bO/CwKV0VbZ+niOjwuHaZOgzTX6pCK49Gdi5NKjhztoCQc=\n-----END SSH SIGNATURE-----\n"
+
+[[attestation]]
+hypothesis = "Egg.FirstOrder"
+person = "A. Cook"
+date = "2026-10-14"
+level = "green"
+reason = "eq. (11) of Buay et al.: first term of the series solution, compared there with a measurement"
+checklist = ["H1", "H2", "H3"]
+bound = "2f2a0dc493afe20c5848e92c95fc2eafcf05a0d607c5fbbf9250ab983d4f2e14"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQE3EVIbDxkm2hsScHEi7WWCl8JnQjuzEKj3fcm\new9u5aqJIm/1dl5cQ7kWYT9Z2D5oRT9rJl9e9331m2RS1e0A8=\n-----END SSH SIGNATURE-----\n"
+
+[[attestation]]
+claim = "kitchen"
+person = "A. Cook"
+date = "2026-10-14"
+level = "green"
+reason = ""
+checklist = ["C2", "C3"]
+bound = "63b3f687eb1ad812845a887e9f9108cadb02b698f231ab2255fc800d65fffec5"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQMpleYqkvNo0oe5tEn4F2T1knEYEONpaQiA5Qt\nbgfjzbGxMx2P+92GiJLge/kMgiRixXx2oyp22MTZhcY6vIIQ4=\n-----END SSH SIGNATURE-----\n"
+
+[[attestation]]
+claim = "six"
+person = "A. Cook"
+date = "2026-10-14"
+level = "conjecture"
+reason = "tested on Sundays, never measured"
+checklist = []
+bound = "c0a164bf57c9e5e45d0e2ce21632035d322cf581728629f1079b8b2bbc542172"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQL8HUXtmWEjhYQFWe6zapo1VcNZoa8u70S5yx1\nOcttT63KbAKrMTmywJx/H/cM69JV3iiGraLO6EzDr39BVWcAo=\n-----END SSH SIGNATURE-----\n"
+
+[[attestation]]
+claim = "fridge"
+person = "B. Taster"
+date = "2026-10-14"
+level = "yellow"
+reason = "the proof is fine; but the first-order formula is worst for soft eggs, so for a very soft egg the minute is only an estimate"
+checklist = ["C1"]
+bound = "b68e1709a748872f73fd07dc47198dc09282c86cf22bdd56b4c6d770c3b7b6fd"
+
+[[attestation]]
+claim = "taste"
+person = "B. Taster"
+date = "2026-10-14"
+level = "green"
+reason = "I organised the tasting and kept the notes"
+checklist = []
+bound = "ce5f6cbe20cb30fa3276899c1263b32da89143bf974483f66b5e6792c352450b"

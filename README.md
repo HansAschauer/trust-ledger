@@ -39,6 +39,10 @@ described in a paper in preparation.
   the core knows no tool. `dvc_steps.py` turns the stages of a DVC pipeline (`dvc.yaml`) into `[step.*]`
   tables (needs PyYAML).
 * `docs/ARCHITECTURE.md`: what is fixed in the core and what varies by field; how to add an adapter.
+* `examples/egg`: start here. A short paper (how long to boil an egg) with Lean, data, a check, a cited
+  hypothesis, private data, and attestations of every kind (signed, unsigned, yellow, stale, conjecture,
+  known theorem, a standalone one by an outside reader); `make -C examples/egg` builds the paper with its
+  appendix.
 * `examples/toy`: a hand-made project with Lean and ProVerif evidence; `python3 ledger.py -C examples/toy status`.
 * `examples/lab`: a lab measurement: published and private data (salted commitment), a manual and a scripted
   step, a check of the stated value; `python3 ledger.py -C examples/lab why g-measured`.

@@ -1,0 +1,109 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amsthm}
+\usepackage[hidelinks]{hyperref}
+\usepackage[paper=egg]{ledgercheck}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{observation}[theorem]{Observation}
+\newtheorem{conjecture}[theorem]{Conjecture}
+
+\title{How long should I boil my egg?\\\large A worked example of an evidence ledger\ledgertitlenote}
+\author{A.~Cook \and B.~Taster}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A hard-boiled egg is done when its centre reaches $85\,^\circ$C. Starting from the cooking-time formula of
+Buay et al., we show that bigger eggs need quadratically longer, that colder eggs need longer, and that an egg
+taken from the fridge needs about one minute more than one at room temperature, however hard it should be.
+A kitchen measurement agrees. This paper is an example for the trust-ledger tool: the kitchen, its data and
+its authors are fictitious, and the appendix shows what the ledger records about each result.
+\end{abstract}
+
+\section{The model}
+
+An egg is a prolate spheroid with semi-axes $a > b$. For heat flow, Buay et al.\ replace it by the sphere with
+the same ratio of surface to volume, of radius
+\begin{equation}\label{eq:radius}
+  R = \frac{2ab}{b + \beta a}, \qquad \beta = \frac{\arcsin e}{e}, \quad e = \sqrt{1 - b^2/a^2}
+\end{equation}
+\cite[eq.~(22)]{Buay2006}, and they keep only the first term of the series solution for the temperature at its
+centre. We take their result as given.
+
+\begin{lemma}[Buay et al.]\label{lem:firstorder}
+  A sphere of radius $R$ and thermal diffusivity $\alpha$, at temperature $T_0$, put into a bath at $T_b$,
+  reaches the temperature $T_c$ at its centre, $T_0 < T_c < T_b$, after the time
+  \[ t(R, \alpha, T_b, T_0, T_c) = \frac{R^2}{\pi^2 \alpha} \ln \frac{2 (T_b - T_0)}{T_b - T_c}. \]
+\end{lemma}
+
+The formula is their eq.~(11). It is an approximation (the first term of a series), best when the egg is
+nearly done ($T_c$ close to $T_b$) and worst for a very soft egg; they compare it with a measurement and
+find agreement within a few percent at $T_c = 85\,^\circ$C \cite{Buay2006}. An older and simpler estimate
+\cite{Roura2000} is about 15\,\% too long.
+
+\section{Three consequences}
+
+\begin{lemma}[Bigger eggs]\label{lem:scaling}
+  For every $k$, $t(kR, \alpha, T_b, T_0, T_c) = k^2\, t(R, \alpha, T_b, T_0, T_c)$.
+\end{lemma}
+
+\begin{lemma}[Colder eggs]\label{lem:colder}
+  If $R, \alpha > 0$ and $T_0' < T_0 < T_c < T_b$, then
+  \[ t(R, \alpha, T_b, T_0, T_c) < t(R, \alpha, T_b, T_0', T_c): \]
+  a colder egg needs strictly longer.
+\end{lemma}
+
+\begin{theorem}[The fridge penalty]\label{thm:fridge}
+  Assume Lemma~\ref{lem:firstorder}. If $R, \alpha > 0$ and $T_0' < T_0 < T_c < T_b$, an egg started at $T_0'$
+  needs longer than one started at $T_0$ by
+  \[ \frac{R^2}{\pi^2 \alpha} \ln \frac{T_b - T_0'}{T_b - T_0}, \]
+  which does not depend on $T_c$.
+\end{theorem}
+
+For a medium egg ($R = 23.2$\,mm) and $\alpha = 1.6 \times 10^{-7}\,\mathrm{m^2/s}$ the prefactor is
+$R^2/(\pi^2\alpha) = 341$\,s. In boiling water, an egg from the fridge ($5\,^\circ$C) instead of from the
+counter ($20\,^\circ$C) needs $341\,\mathrm{s} \cdot \ln(95/80) \approx 59$\,s more: one minute, for a soft
+egg as for a hard one.
+
+\begin{lemma}[On a mountain]\label{lem:altitude}
+  Where water boils below $100\,^\circ$C, every egg takes longer.
+\end{lemma}
+
+This lemma follows from the same formula, but we did not put it into the ledger: the appendix lists it as
+not covered, and nothing is claimed about it there.
+
+\section{In the kitchen}
+
+We measured one egg: its semi-axes with a calliper, then its centre temperature with a probe thermometer every
+30\,s after putting it, straight from the fridge, into boiling water. A script fits $\alpha$ to the readings
+with the full series solution \cite[eq.~(5)]{Buay2006}.
+
+\begin{observation}\label{obs:kitchen}
+  Our egg ($a = 28.0$\,mm, $b = 21.5$\,mm, so $R = 23.2$\,mm by \eqref{eq:radius}), started at $5\,^\circ$C,
+  reached $85\,^\circ$C at its centre after $14.4$\,min. The fitted thermal diffusivity is
+  $\alpha = 1.60 \times 10^{-7}\,\mathrm{m^2/s}$, inside the range $1.5$ to $1.8 \times 10^{-7}\,\mathrm{m^2/s}$
+  found by Buay et al.
+\end{observation}
+
+Three people ate the egg. In a real paper their notes would stay private, and the ledger would hold only a
+salted commitment to them, so that they cannot be changed later without anyone noticing. In this example
+the notes and the salt are in the supplement, so that the reader can check the commitment.
+
+\begin{observation}\label{obs:taste}
+  All three tasters called the egg firm but not rubbery, and none saw a green rim around the yolk.
+\end{observation}
+
+\begin{conjecture}\label{conj:six}
+  Six minutes from boiling water makes the perfect soft-boiled egg.
+\end{conjecture}
+
+\section{What the reader can check}
+
+\ledgersummary[What the ledger says]
+
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

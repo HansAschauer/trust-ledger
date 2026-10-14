@@ -1,0 +1,16 @@
+
+[key.reader]
+person = "C. Reader"
+public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEzzuYH78FPEHvsNCnGIibnA27kbzMvLs16cgMS31vj+ C. Reader, trust-ledger egg example"
+source = "attestation-file"
+
+[[attestation]]
+claim = "scaling"
+person = "C. Reader"
+date = "2026-10-14"
+level = "green"
+reason = ""
+checklist = ["C1", "C2"]
+bound = "b4ef589321efe8fa413f4c8db4ecc1a11bcda83fcd8ff343cbc92f38edd584f9"
+key = "reader"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgTPO5gfvwU8Qe+w0KcYiJucDbuR\nvMy8uzXpyAxLfW+P4AAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQFaCS6wLDGHzERhs3I0z2OJRIhpOUGdQl40bo6\nbJ6AvJEAXOA10m0HEpQt30GyO6uuyZhpLrxEeSN/E229ILvgg=\n-----END SSH SIGNATURE-----\n"

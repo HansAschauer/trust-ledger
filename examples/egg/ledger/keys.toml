@@ -1,0 +1,5 @@
+
+[key.cook]
+person = "A. Cook"
+public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMKDrI1M5TxX/QM2EufiUAvJJ1y0a7dkvy9k6xDMZ6gG A. Cook, trust-ledger egg example"
+source = "paper"

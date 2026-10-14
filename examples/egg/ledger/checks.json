@@ -1,0 +1,41 @@
+{
+ "adapter": "checks",
+ "env_hash": "7bb3a034a7c50b23444b49d209f445f2eb44916eca6747bfe2dae8cdde24332e",
+ "labels": {
+  "fail": "fail",
+  "pass": "pass"
+ },
+ "legend": "pass/fail = the check script, which tests the result against its data, exits with 0 / another code on the recorded inputs.",
+ "nodes": {
+  "kitchen": {
+   "content": {
+    "code": {
+     "checks/kitchen.py": "73b103151b83d517b668c1905f78c5878c3cbac3c9884f011fc50e941f92fdc8"
+    },
+    "command": "python3 checks/kitchen.py",
+    "exit": 0,
+    "inputs": {
+     "results/fit.json": "4c727c88caadfb28335a101271a48bb32309afa601d385eb4e4cc5f3241884c1"
+    },
+    "name": "kitchen",
+    "stdout_sha256": "a0b62bfc00b1601350cc6e1e0f49fc4c0b6297bef8aabe58b30c9d6e3d609e58"
+   },
+   "info": {
+    "stderr": "",
+    "stdout": "obs:kitchen holds: {'R_mm': 23.2, 'alpha': 1.602e-07, 't85_s': 864, 't85_first_order_s': 865, 'rms_C': 0.35}\n"
+   },
+   "kind": "check",
+   "spec": {
+    "code": {
+     "checks/kitchen.py": "73b103151b83d517b668c1905f78c5878c3cbac3c9884f011fc50e941f92fdc8"
+    },
+    "command": "python3 checks/kitchen.py",
+    "name": "kitchen"
+   },
+   "status": "ok",
+   "word": "pass"
+  }
+ },
+ "title": "Check",
+ "version": "0.2.0"
+}
