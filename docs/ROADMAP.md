@@ -57,3 +57,20 @@ challenge is as valuable as a confirmation). Questions for later:
 * how the appendix displays open disputes (they must not be hideable by the authors: disputes published
   outside the root, e.g. by the reviewer, cannot be removed by a later version);
 * the sybil / identity problem is the same as for confirmations.
+
+### Timestamps: "not after" and "not before"
+A hash proves *what* a node says, never *when* it was written. Some claims need the date: "the exclusion rule
+was fixed before the data were seen", "the preregistration predates the analysis". Today the ledger leaves that
+to an outside registry (`examples/prereg` records the registry URL). Two mechanisms would make it checkable:
+* **not after** (it existed by date D): have the root, or the root of an intermediate lock, timestamped by a
+  third party: an RFC 3161 timestamping authority, or OpenTimestamps (anchored in the Bitcoin blockchain, no
+  trusted party besides the chain). The receipt is *about* a root, so it is stored next to the lock file and not
+  hashed into it; `verify` would check it against the root it names. A sequence of timestamped intermediate
+  roots shows an order: the lock that contains the exclusion rule was sealed before the one that contains
+  the data.
+* **not before** (it was made after date D): hash in a value nobody could know before D, such as a round of a
+  public randomness beacon (drand, the NIST beacon) or a recent block hash, as a node that the later work
+  depends on.
+Questions for later: which nodes get dated (the whole root, or single nodes such as a preregistration); how
+the appendix shows dates without implying more than the mechanism proves; receipts that need network access
+to check (the core never goes online during `verify`, so checking could be a separate command).

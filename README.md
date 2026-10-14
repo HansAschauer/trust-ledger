@@ -10,18 +10,27 @@ described in a paper in preparation.
 ## Why
 
 Suppose you wrote a paper with the help of an AI model. The model suggested two of the lemmas and wrote most
-of the Lean proofs. A script it drafted fits the data and draws the figures. A colleague repeated the
+of the proofs in [Lean](https://lean-lang.org). Lean is a proof assistant: a program in which a mathematical
+statement and its proof are written down so precisely that the computer checks every step, and a proof it
+accepts has no gap. A script the model drafted fits the data and draws the figures. A colleague repeated the
 experiment in their own lab and sent you a short report. Now you want to be honest with your readers, in a
 way they can check: what did a machine verify, what did a person observe, what came out of a model, and who
 stands behind each result?
 
-The pieces do not answer this by themselves. A proof assistant checks a proof no matter who wrote it, but it
-cannot tell whether the formal statement says what the sentence in the paper says. A script reproduces a
-figure, but not the measurement behind it. A model's summary of a proof is not a review. trust-ledger keeps
-these apart and writes them down:
+Or, with no AI involved: a master's thesis whose results come out of a data analysis, whether of lab
+measurements, geological drill cores, GIS layers, a psychology study or a survey in experimental philosophy.
+There are raw data, a cleaning script, an analysis that produces the tables and maps, perhaps interviews that
+must not be published, and a supervisor who asks: which version of the data produced Table 3? Was the
+exclusion rule fixed before anyone looked at the results? Does Figure 5 still come from the current script?
+
+The pieces do not answer this by themselves. Lean checks a proof no matter who wrote it, but it cannot tell
+whether the formal statement says what the sentence in the paper says. A script reproduces a figure, but not
+the measurement behind it, and a folder of data files does not say which of them a table was computed from.
+A model's summary of a proof is not a review. trust-ledger keeps these apart and writes them down:
 
 * **computed**: what a tool derived and anyone can recompute: Lean declarations with their axioms and any
-  `sorry`, ProVerif results, results of check scripts, digests of data and figure files.
+  `sorry` (Lean's marker for a proof step left out), results of [ProVerif](https://bblanche.gitlabpages.inria.fr/proverif/)
+  (a verifier for security protocols), results of check scripts, digests of data and figure files.
 * **asserted**: what a person wrote: the claims, results cited from other papers, statements made without
   proof, manual steps with the name of the person who did them (a measurement, a tester's report), and
   private data, which enters only as a salted commitment.
