@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]   # 3.11: oldest with tomllib
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: PyYAML (only for adapters/dvc_steps.py and its tests)
+        run: python -m pip install pyyaml
+      - name: Unit tests (the LaTeX tests run in the job "paper")
+        run: python -m unittest -v tests.test_ledger
+      - name: Examples as a fresh clone sees them (no private data)
+        run: |
+          python ledger.py -C examples/toy status
+          python ledger.py -C examples/lab status
+          python ledger.py -C examples/lab reproduce
+          python ledger.py -C examples/prereg status
+          python ledger.py -C examples/prereg reproduce
+      - name: The egg example's committed lock and standalone attestation verify
+        working-directory: examples/egg
+        run: |
+          python ../../ledger.py -P egg verify
+          python ../../ledger.py -P egg verify-attestation ledger/reader-attestation.toml --lock ledger/lock-egg.json
+          python ../../ledger.py reproduce
+
+  paper:
+    name: egg example rebuilt from its sources, and the LaTeX tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends latexmk texlive-latex-recommended texlive-latex-extra \
+            texlive-fonts-recommended
+      - name: Unit tests, now including the ones that need pdflatex and latexmk
+        run: python -m unittest tests.test_ledger
+      - name: extract, check, lock, tex, PDF
+        run: make -C examples/egg PY=python
+      - name: The committed ledger is what the sources give
+        run: git diff --exit-code -- examples/egg/ledger
+      - uses: actions/upload-artifact@v4
+        with:
+          name: egg-paper
+          path: examples/egg/paper/main.pdf
