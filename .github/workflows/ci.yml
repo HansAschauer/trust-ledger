@@ -49,8 +49,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends latexmk texlive-latex-recommended texlive-latex-extra \
-            texlive-fonts-recommended
-      - name: Unit tests, now including the ones that need pdflatex and latexmk
+            texlive-fonts-recommended poppler-utils   # poppler-utils: pdftotext, used by the LaTeX tests
+      - name: Unit tests, now including the ones that need pdflatex, latexmk and pdftotext
         run: python -m unittest tests.test_ledger
       - name: extract, check, lock, tex, PDF
         run: make -C examples/egg PY=python

@@ -281,7 +281,7 @@ class Latex(Toy):
         with self.assertRaises(SystemExit):
             lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "No.Such", "--person", "X", "--level", "green"])
 
-    @unittest.skipUnless(shutil.which("pdflatex"), "needs pdflatex")
+    @unittest.skipUnless(shutil.which("pdflatex") and shutil.which("pdftotext"), "needs pdflatex and pdftotext")
     def test_package_compiles_in_a_minimal_document(self):
         """The package must not depend on macros of the host paper (it once used the paper's own \\Lean)."""
         lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
@@ -302,7 +302,7 @@ class Latex(Toy):
         self.assertIn("given [H1]", text)
         self.assertRegex(" ".join(text.split()), r"not proved\. 0 of 2 attestations")   # sentences of the banner apart
 
-    @unittest.skipUnless(shutil.which("pdflatex"), "needs pdflatex")
+    @unittest.skipUnless(shutil.which("pdflatex") and shutil.which("pdftotext"), "needs pdflatex and pdftotext")
     def test_summary_paragraph(self):
         """\\ledgersummary in the paper's text: switched on by options passed before the class, empty without them;
         it points to the appendix when the build has one, else to the supplement."""
@@ -429,7 +429,8 @@ class Latex(Toy):
         self.assertIn("The successor is larger", (self.p / "paper" / "readings" / "lem-succ.tex").read_text())
         self.assertIn("\\input{readings/lem-succ}", body)
 
-    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex"), "needs latexmk and pdflatex")
+    @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex") and shutil.which("pdftotext"),
+                         "needs latexmk, pdflatex and pdftotext")
     def test_review_packet_builds_with_the_papers_numbers(self):
         shutil.copy(ROOT / "tex" / "ledgercheck.sty", self.p / "paper")          # a real project vendors the package, too
         self.reviewed()
