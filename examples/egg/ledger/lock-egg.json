@@ -160,7 +160,7 @@
    "kind": "lean-decl"
   },
   "paper:egg": {
-   "full": "4962be1f822e3e8895d4f525742213432e8712fd59b221a8079a602bb2a21948",
+   "full": "3f9c09d0dc2e294061e6b8d08e5d336acae207226aadab2e1d556b249bf65128",
    "kind": "paper-source"
   },
   "source:probe": {
@@ -180,6 +180,6 @@
    "kind": "step"
   }
  },
- "root": "d951417570fa736fa0cdc2e2a8422d7032cecd03d328e41ad34463fcb249eb9a",
+ "root": "31db84a49ec79cf2203212c59d6b641aa328045338efdc321a905a1738b159c7",
  "tool": "0.2.0"
 }

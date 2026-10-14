@@ -691,7 +691,9 @@ class Ledger:
             search = [(self.root / d).resolve() for d in pc.get("texinputs", [])]
             files, unresolved = tex_sources(main, search, excluded)
             self.unresolved[name] = unresolved
-            rel = lambda f: str(f.relative_to(self.root)) if self.root in f.parents else str(f)
+            # relative to the project root, also for files outside it (`../`), so that the root does not depend
+            # on where the project is checked out
+            rel = lambda f: Path(os.path.relpath(f, self.root)).as_posix()
             self.paper_nodes[name] = dict(main=pc["main"], files={rel(f): sha_file(f) for f in files},
                                           unresolved=unresolved)
             self.flat[name] = flatten_tex(main, search)

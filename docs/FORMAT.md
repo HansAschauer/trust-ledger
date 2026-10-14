@@ -76,6 +76,9 @@ named by `\bibliography`, and every local `.sty` named by `\usepackage`/`\Requir
 way, searched recursively; packages not found locally belong to the TeX distribution and are not listed), in raw bytes, **minus everything below a `generated` directory**. Generated
 files (the root file, the status table) are derived from the ledger, so hashing them would be circular.
 Names that cannot be resolved are listed in `unresolved`, not silently ignored.
+Paths in `files` are relative to the project root, with `/` as separator and `..` for files outside it
+(e.g. a package found through `texinputs`), never absolute: the root must not depend on where the project is
+checked out.
 
 A claim with `labels` (or `label`) takes its statement from the paper: for each label, the text of the
 innermost statement environment (`theorem`, `lemma`, ... ) or display-math environment containing
@@ -323,6 +326,9 @@ difference. The root is what gets published (e.g. in the arXiv comment field); s
   Added (no effect on ledgers that do not use them): sources, steps, checks and commitments (section 3.4),
   directory digests for files, evidence types and checklists in `ledger.toml` (section 3.5), display fields of
   adapter dumps.
+* **0.2.0, fix (2026-10-14)**: paper-source files outside the project root were keyed by their absolute path, so
+  such a root depended on the checkout location; they are now keyed relative to the root (section 2.4). Only
+  ledgers with such files change their root; their attestations stay current.
 * **0.1.0**: first versioned format (lock files with `format` `0` were written by its unversioned
   predecessor, with the same hashing).
 

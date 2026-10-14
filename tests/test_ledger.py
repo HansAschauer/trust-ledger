@@ -1076,6 +1076,34 @@ class ReviewDefinitions(unittest.TestCase):
         self.assertIn("D9~\\texttt{c}", r)
 
 
+class Egg(unittest.TestCase):
+    """The egg example ships its lock file: it must verify wherever the repository is checked out."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    tearDown = Toy.tearDown
+
+    def checkout(self, where):
+        """The parts of the repository the example uses, below `where`, as a clone has them."""
+        for d in ("tex", "adapters"):
+            shutil.copytree(ROOT / d, where / d, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "examples" / "egg", where / "examples" / "egg",
+                        ignore=shutil.ignore_patterns("keys", "__pycache__"))  # the example keys are git-ignored
+        return where / "examples" / "egg"
+
+    def test_committed_lock_verifies_in_any_location(self):
+        for where in (self.tmp / "a", self.tmp / "b" / "deeper" / "still"):
+            p = self.checkout(where)
+            self.assertEqual(lg.main(["-C", str(p), "-P", "egg", "verify"]), 0, where)
+
+    def test_paper_files_outside_the_project_are_relative(self):
+        L = lg.Ledger(self.checkout(self.tmp / "a"), paper="egg")
+        files = L.paper_nodes["egg"]["files"]
+        self.assertIn("../../tex/ledgercheck.sty", files)
+        self.assertFalse([f for f in files if f.startswith("/") or str(self.tmp) in f])
+
+
 class Merkle(unittest.TestCase):
     def test_cycle_members_share_dependence(self):
         pay = {"a": 1, "b": 2, "c": 3}
