@@ -16,7 +16,7 @@
     "data:probe",
     "manual:measure"
    ],
-   "spec": "63b3f687eb1ad812845a887e9f9108cadb02b698f231ab2255fc800d65fffec5"
+   "spec": "3736f0e975d87b95307024f949586ce42fc74cc7400c320e229b31c04eb7c615"
   },
   "scaling": {
    "register": [],
@@ -36,7 +36,7 @@
    "spec": "ce5f6cbe20cb30fa3276899c1263b32da89143bf974483f66b5e6792c352450b"
   }
  },
- "format": "0.2.0",
+ "format": "0.3.0",
  "hypotheses": {
   "Egg.FirstOrder": {
    "spec": "2f2a0dc493afe20c5848e92c95fc2eafcf05a0d607c5fbbf9250ab983d4f2e14"
@@ -64,7 +64,7 @@
    "kind": "attestation"
   },
   "attest:4": {
-   "full": "48c810140a7f534e3e98d423c72ddc3a931580bc9d00edcce2fd7e17d9de1b9c",
+   "full": "4bd4f5f66bb526a9129fa10780567a044c33e497929fb777861166e6be7b6ea7",
    "kind": "attestation"
   },
   "attest:5": {
@@ -80,11 +80,15 @@
    "kind": "attestation"
   },
   "attest:8": {
+   "full": "8ef28df2dffe54c2ec4def4c0d7ba7a26ad96e683f21836ad718cdc514e980f6",
+   "kind": "attestation"
+  },
+  "attest:9": {
    "full": "c2edc7f3a1ab67dbfc96884f93b64319814545d2ee2458a6a638661b89778854",
    "kind": "attestation"
   },
   "check:kitchen": {
-   "full": "896c2c42d425bda392918b21f185e66997e0de8aefb2c2b65e276046b4c8fcd3",
+   "full": "df87e57ebd974be8aa8a68771cfb4d6fcbc909e32814d33fd7da831dd12141c4",
    "kind": "check"
   },
   "cite:buay": {
@@ -100,7 +104,7 @@
    "kind": "claim"
   },
   "claim:kitchen": {
-   "full": "d13e12f6665b5667f79adb82b80b4513c5ae0388cc48effa1b5e93172a17545c",
+   "full": "0365c2b02d1c845d2f6fcdc667304561889a02de22cd5fde7561d99273a31c9a",
    "kind": "claim"
   },
   "claim:scaling": {
@@ -120,11 +124,11 @@
    "kind": "environment"
   },
   "file:data/egg.json": {
-   "full": "2debd50ccc2df65049835d06677ad54f2075bb6ae2ef25760a70a2ca3fe6f51d",
+   "full": "37fa9ee3c89ba027cbc5658463d7dc45a23ffbd57e1b993af463d1d5ce0ede97",
    "kind": "file"
   },
   "file:results/fit.json": {
-   "full": "85e535f56d85d48b25fc5c68b9ef222016bc1d94f52358f7e111321e9420cb40",
+   "full": "3bfbfe721c4c00b010d66ae56685cd6f0a1a298f4e5ae5225d3d3daac47461fa",
    "kind": "file"
   },
   "hyp:Egg.FirstOrder": {
@@ -172,14 +176,14 @@
    "kind": "source"
   },
   "step:fit": {
-   "full": "b5ece7370bf987890e040bf9c71d9c02152838779703786d1b9af6ebad251dee",
+   "full": "9bb3e98a2a149bc1caec2c3b72f340b1bbf8a9443e066ca5a71dd8512adefa61",
    "kind": "step"
   },
   "step:measure": {
-   "full": "f784d0f7ed559c2fceca62b97c03334268196e076efc4e4ce98e1710b12fd636",
+   "full": "5b2f96e99758d7d088e9cadc9a932cebcffec8ed76c130d43459d9e0fb756983",
    "kind": "step"
   }
  },
- "root": "31db84a49ec79cf2203212c59d6b641aa328045338efdc321a905a1738b159c7",
- "tool": "0.2.0"
+ "root": "3732c18a6b9ef0a5c93e49dd8f74e7a1e06dee151086725c8a917f6ddb17865f",
+ "tool": "0.3.0"
 }

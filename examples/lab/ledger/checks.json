@@ -1,6 +1,5 @@
 {
  "adapter": "checks",
- "env_hash": "103d806457b9520fa5f1132e505069a1a43edee2e1f87eeda42278e4804479a6",
  "labels": {
   "fail": "fail",
   "pass": "pass"
@@ -37,5 +36,5 @@
   }
  },
  "title": "Check",
- "version": "0.2.0"
+ "version": "0.3.0"
 }

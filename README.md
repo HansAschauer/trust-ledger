@@ -4,7 +4,7 @@ A tamper-evident record of what each result in a paper rests on: machine-checked
 cited results, reports by people, model-generated aids, and the named people who vouch for each statement.
 One root hash, printed in the paper, seals all of it.
 
-Status: alpha, version 0.2.0 (ledger format 0.2.0). Formats and commands may still change. The method is
+Status: alpha, version 0.3.0 (ledger format 0.3.0). Formats and commands may still change. The method is
 described in a paper in preparation.
 
 ## Why

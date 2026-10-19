@@ -80,3 +80,14 @@ level = "green"
 reason = "I organised the tasting and kept the notes"
 checklist = []
 bound = "ce5f6cbe20cb30fa3276899c1263b32da89143bf974483f66b5e6792c352450b"
+
+[[attestation]]
+claim = "kitchen"
+person = "A. Cook"
+date = "2026-10-19"
+level = "green"
+reason = ""
+checklist = ["C2", "C3"]
+bound = "3736f0e975d87b95307024f949586ce42fc74cc7400c320e229b31c04eb7c615"
+key = "cook"
+sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgwoOsjUzlPFf9AzYS5+JQC8knXL\nRrt2S/L2TrEMxnqAYAAAAYdHJ1c3QtbGVkZ2VyLWF0dGVzdGF0aW9uAAAAAAAAAAZzaGE1\nMTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQB/4TVakUZ9HkTsB1nOPEs34WzmJEYVHKk1hO4\nM4kG06IkfHCrJeN5/h1JOtsfo2gg7pkNggkb3zIjCP5/XqeAM=\n-----END SSH SIGNATURE-----\n"

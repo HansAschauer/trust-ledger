@@ -20,9 +20,9 @@ DIR is the project root; it must contain ledger/ledger.toml.
 import argparse, base64, datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, tomllib, unicodedata
 from pathlib import Path
 
-__version__ = "0.2.0"
-FORMAT_VERSION = "0.2.0"          # docs/FORMAT.md; recorded in every lock file
-READS_FORMATS = ("0.2.0",)        # older lock files: `ledger.py migrate` (FORMAT.md 6)
+__version__ = "0.3.0"
+FORMAT_VERSION = "0.3.0"          # docs/FORMAT.md; recorded in every lock file
+READS_FORMATS = ("0.3.0",)        # older lock files: `ledger.py migrate` (FORMAT.md 6)
 LEVELS = ("green", "yellow", "conjecture")
 ROOT_KINDS = ("claim", "attestation", "environment", "paper-source", "hypothesis")
 ASSESSMENT_VERDICTS = ("consistent", "partial", "check", "mismatch", "unclear")
@@ -32,7 +32,7 @@ DEFAULT_EVIDENCE = [dict(id="E1", name="checked proof"), dict(id="E2", name="che
                     dict(id="E3", name="exact computation"), dict(id="E4", name="numerical evidence"),
                     dict(id="E5", name="assertion")]
 # adapters (FORMAT.md section 2.6): a claim lists references into an adapter's dump under the adapter's name
-CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "sources", "uses", "cites", "note"}
+CLAIM_FIELDS = {"text", "label", "labels", "paper", "evidence", "files", "provenance", "sources", "uses", "cites", "note"}
 ADAPTER_STATUS = ("ok", "conditional", "open", "failed")  # increasing severity; a claim shows its worst reference
 CORE_KINDS = {"file", "source", "step", "paper-source", "claim", "citation", "assertion", "attestation", "key",
               "hypothesis", "reading", "assessment", "environment"}
@@ -812,7 +812,7 @@ class Ledger:
             return  # an invalid dump contributes nothing
         a.update(nodes=d["nodes"], words=d.get("words", []), environment=d.get("environment"),
                  title=d.get("title", name), labels=d.get("labels", {}), legend=d.get("legend", ""))
-        if d.get("env_hash") and d["env_hash"] != self.env_hash():
+        if d.get("env_hash") and name != "checks" and d["env_hash"] != self.env_hash():  # checks: per check, above
             self.errors.append(f"{p.name} is older than the sources it was extracted from "
                                f"(environment files changed): run `{hint}`")
 
@@ -847,13 +847,15 @@ class Ledger:
             deps[i] = []
         self.build_data(payload, deps, env)
         for n, c in self.claims.items():
-            for f in c.get("files", []):
+            for f in c.get("files", []) + c.get("provenance", []):
                 self.file_node(payload, deps, f, f"claim {n}")
         for name, a in self.adapters.items():  # every node of every dump; what no root rests on is dropped below
             for ref, nd in a["nodes"].items():
                 i = a["prefix"] + ref
                 payload[i] = dict(kind=nd["kind"], provenance="computed", content=nd["content"])
-                deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", [])} | {env})  # tools rest on their environment
+                # tools rest on their environment; a check (a script of the project) only if it declares it
+                uses_env = name != "checks" or self.checks.get(ref, {}).get("environment", False)
+                deps[i] = sorted({a["prefix"] + x for x in nd.get("deps", [])} | ({env} if uses_env else set()))
                 if "spec" in nd:
                     self.spec_payload[i] = dict(kind=nd["kind"], content=nd["spec"])
                     self.spec_deps[i] = sorted({a["prefix"] + x for x in nd.get("spec_deps", [])})
@@ -870,7 +872,9 @@ class Ledger:
                 deps[i].append(x if x.startswith("source:") else self.file_node(payload, deps, x, f"check {ref}") or x)
             deps[i] = sorted(set(d for d in deps[i] if d in payload))
             got = self.adapters["checks"]["nodes"][ref]["content"]
-            if got.get("inputs") != ins or got.get("command") != ch["command"] or got.get("code") != self.code_hashes(ch):
+            env_now = self.env_hash() if ch.get("environment") else None
+            if (got.get("inputs") != ins or got.get("command") != ch["command"] or got.get("code") != self.code_hashes(ch)
+                    or got.get("environment") != env_now):
                 self.errors.append(f"check {ref}: the recorded result is for other inputs or another version of the "
                                    "check: run `ledger.py check`")
         for n, c in self.claims.items():
@@ -918,7 +922,7 @@ class Ledger:
                     self.errors.append(f"hypothesis {h}: unknown citation {x}")
         for n, c in self.claims.items():
             i = "claim:" + n
-            d = ["file:" + f for f in c.get("files", []) if "file:" + f in payload]
+            d = ["file:" + f for f in c.get("files", []) + c.get("provenance", []) if "file:" + f in payload]
             d += ["source:" + x for x in c.get("sources", []) if "source:" + x in payload]
             d += [i for i in self.adapter_ids(c) if i in payload]
             for x in c.get("cites", []):
@@ -982,9 +986,10 @@ class Ledger:
         self.spec = merkle(self.spec_payload, self.spec_deps, "spec")
         cp, cd = {}, {}
         for n, c in self.claims.items():
+            prov = self.provenance_only(n)
             cp[n] = dict(text=self.stmt[n][0],
-                         evidence=[[i, self.spec[i] if i in self.spec else self.full[i]] for i in sorted(deps["claim:" + n])
-                                   if payload.get(i, {}).get("kind") not in ("claim", "reading", "assessment")])
+                         evidence=[[i, self.evidence_spec(i)] for i in sorted(deps["claim:" + n])
+                                   if payload.get(i, {}).get("kind") not in ("claim", "reading", "assessment") and i not in prov])
             cd[n] = [u for u in c.get("uses", []) if u in self.claims]
         self.cspec = merkle(cp, cd, "claim-spec")
         self.hspec = {h: H("hyp-spec", dict(text=self.hstmt[h][0], stated=self.spec.get(self.hyp_node.get(h), ""),
@@ -1002,6 +1007,21 @@ class Ledger:
                                          f"{self.ev(self.claims[u])}: a result is no stronger than what it rests on")
 
     # -------------------------------------------------------- data, steps, checks (FORMAT.md 3.4)
+    def provenance_only(self, n):
+        """File nodes a claim records only as provenance: not in its spec hash, not in its register."""
+        c = self.claims[n]
+        return {"file:" + f for f in c.get("provenance", [])} - {"file:" + f for f in c.get("files", [])}
+
+    def evidence_spec(self, i):
+        """What an attestation binds to for evidence node i: its spec if it has one; for a file, its content alone
+        (the node hash without the step that produced it: a person attests what the file shows, not how it was
+        made); otherwise its full hash."""
+        if i in self.spec:
+            return self.spec[i]
+        if self.payload.get(i, {}).get("kind") == "file":
+            return merkle({i: self.payload[i]}, {i: []}, "node")[i]
+        return self.full[i]
+
     def file_node(self, payload, deps, f, who):
         """Node id of the file (or directory) f, created on first use; it rests on the step that produces it."""
         i = "file:" + f
@@ -1055,9 +1075,9 @@ class Ledger:
         for n, st in self.steps.items():
             i = "step:" + n
             payload[i] = dict(kind="step", provenance="asserted", content=dict(
-                {k: st[k] for k in ("command", "manual", "person", "note", "compare") if k in st},
+                {k: st[k] for k in ("command", "manual", "person", "note", "compare", "environment") if k in st},
                 name=n, outputs=sorted(st.get("outputs", [])), code=self.code_hashes(st)))
-            d = [env]
+            d = [env] if st.get("environment", False) else []   # a step rests on the environment only if it says so
             for x in st.get("inputs", []):
                 if x.startswith("source:"):
                     if x[7:] in self.sources:
@@ -1094,7 +1114,8 @@ class Ledger:
             for name, a in self.adapters.items():
                 r |= {x for ref in c.get(name, []) for x in a["nodes"].get(ref, {}).get("register", [])}
             r |= {"assertion:" + a for a, v in self.assertions.items() if v["claim"] == n}
-            seen, todo = set(), list(self.deps["claim:" + n])  # the data chain: files, steps, sources, checks
+            prov = self.provenance_only(n)  # recorded, not relied on
+            seen, todo = set(), [i for i in self.deps["claim:" + n] if i not in prov]  # the data chain: files, steps, sources, checks
             while todo:
                 i = todo.pop()
                 kind = self.payload.get(i, {}).get("kind")
@@ -1309,16 +1330,26 @@ def cmd_why(L, args):
     c = L.claims[n]
     tools = "".join(f", {name} {L.adapter_status(name, n)}" for name in L.adapters if c.get(name))
     print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {L.ev(c)}{tools}, spec {L.cspec[n][:12]}")
+    prov = L.provenance_only(n)
+
+    def closure(start, skip=()):
+        seen, todo = set(), list(start)
+        while todo:
+            i = todo.pop()
+            if i in seen or i == L.env or i in skip:
+                continue
+            seen.add(i)
+            todo += L.deps.get(i, [])
+        return seen
+    rests = closure([i for i in L.deps["claim:" + n] if i not in prov])
     print("  rests on:")
-    seen, todo = set(), list(L.deps["claim:" + n])
-    while todo:
-        i = todo.pop()
-        if i in seen or i == L.env:
-            continue
-        seen.add(i)
-        todo += L.deps.get(i, [])
-    for i in sorted(seen):
+    for i in sorted(rests):
         print(f"    {L.payload[i]['provenance']:9} {i}")
+    recorded = closure(prov, skip=rests)
+    if recorded:
+        print("  provenance (recorded in the root, not part of what an attestation binds to):")
+        for i in sorted(recorded):
+            print(f"    {L.payload[i]['provenance']:9} {i}")
     print("  register:", ", ".join(L.register[n]) or "(empty)")
     for m, ds in sorted(L.used_in(n).items()):
         print(f"  step of {m}: its proofs use {', '.join(ds)}")
@@ -1326,7 +1357,7 @@ def cmd_why(L, args):
         if n in ns:
             print(f"  shares the label {lab} with {', '.join(x for x in ns if x != n)}")
     for p, lvl, date, cur in L.attestation_state(n):
-        print(f"  attested {lvl} by {p} on {date}: {'current' if cur else 'STALE (statement changed since)'}")
+        print(f"  attested {lvl} by {p} on {date}: {'current' if cur else 'STALE (its statement or the evidence it binds to changed since)'}")
     return 0
 
 
@@ -1981,13 +2012,14 @@ def cmd_check(L, args):
         failed += not ok
         print(f"check {n}: {'pass' if ok else 'FAIL (exit %d)' % out.returncode}")
         code = L.code_hashes(ch)
+        env = dict(environment=L.env_hash()) if ch.get("environment") else {}   # only a check that declares it
         nodes[n] = dict(kind="check", status="ok" if ok else "failed", word="pass" if ok else "fail",
                         content=dict(name=n, command=ch["command"], code=code,
                                      inputs={x: L.input_hash(x) for x in ch.get("inputs", [])},
-                                     exit=out.returncode, stdout_sha256=hashlib.sha256(out.stdout.encode()).hexdigest()),
-                        spec=dict(name=n, command=ch["command"], code=code),
+                                     exit=out.returncode, stdout_sha256=hashlib.sha256(out.stdout.encode()).hexdigest(), **env),
+                        spec=dict(name=n, command=ch["command"], code=code, **({"environment": True} if env else {})),
                         info=dict(stdout=out.stdout[-2000:], stderr=out.stderr[-2000:]))
-    dump = dict(adapter="checks", version=__version__, nodes=nodes, env_hash=L.env_hash(), title="Check",
+    dump = dict(adapter="checks", version=__version__, nodes=nodes, title="Check",
                 labels={"pass": "pass", "fail": "fail"},
                 legend="pass/fail = the check script, which tests the result against its data, exits with 0 / "
                        "another code on the recorded inputs.")
@@ -2080,8 +2112,8 @@ def cmd_migrate(L, args):
     """Rebind unsigned attestations from the statement hashes of an older format (FORMAT.md 6). The old lock file
     must have been current (old `verify` OK) when the dumps and ledger.toml were converted."""
     old = json.loads(Path(args.old_lock).read_text())
-    if old.get("format") not in (0, "0.1.0"):
-        sys.exit(f"{args.old_lock}: format {old.get('format')!r}; migrate reads lock files of format 0.1.0")
+    if old.get("format") not in (0, "0.1.0", "0.2.0"):
+        sys.exit(f"{args.old_lock}: format {old.get('format')!r}; migrate reads lock files of format 0.1.0 and 0.2.0")
     pairs = [(old["claims"].get(n, {}).get("spec"), L.cspec[n]) for n in L.claims]
     pairs += [(old.get("hypotheses", {}).get(h, {}).get("spec"), L.hspec[h]) for h in L.scope_hyps]
     new = {}

@@ -1,4 +1,4 @@
-# Ledger format, version 0.2.0 (alpha)
+# Ledger format, version 0.3.0 (alpha)
 
 This file is the normative part. `ledger.py` is one implementation; anyone can write another
 that produces the same hashes. Nothing here depends on Lean, on any other tool, or on Python: tools
@@ -55,17 +55,25 @@ proof), and hypotheses (section 3.2). A human attestation is bound to `spec`; ho
 shown is covered by `full` and by the tool that checked it.
 
 A claim's spec hash uses `tag = "claim-spec"`, payload
-`{text, evidence: [[id, spec(id) if the node has one, else full(id)] for each node the claim rests on directly,
-except claims, readings and assessments]}` and `deps = uses` (other claims). A changed statement therefore
-also resets the attestations of every claim that `uses` it.
+`{text, evidence: [[id, e(id)] for each node the claim rests on directly, except claims, readings,
+assessments and the files it lists only under provenance]}` and `deps = uses` (other claims), where `e(id)` is
+`spec(id)` if the node has one; for a file, the node hash of the file alone, `h` with `deps = []` (its content,
+not the step that produced it: a person attests what a figure or table shows, not how it was made; for a file
+that no step produces this equals `full`); otherwise `full(id)`. A changed statement therefore also resets the
+attestations of every claim that `uses` it.
+
+Files a claim lists under `provenance` (section 3) are part of the graph, so a change to them changes the
+root, but not of the claim's spec, and not of its register (section 4). They are for outputs that something
+else re-checks, such as a generated Lean file whose statements the kernel checks: recorded, not relied on.
 
 ### 2.3 Environment
 
 One node `env:<project name>` (kind `environment`, `computed`) with content
 `{files: {path: sha256}, adapters: {name: environment}}`: the files matched by the globs in
 `[environment] files` (outside the generated directories) and the `environment` object of each adapter dump
-that has one (e.g. the Lean toolchain). Every adapter node depends on it: a result rests on the tool and
-the setup that produced it.
+that has one (e.g. the Lean toolchain). Every node of an extracted adapter depends on it: a result rests on
+the tool and the setup that produced it. Steps and checks (section 3.4) are scripts of the project with their
+own inputs and code; they depend on the environment node only if they declare `environment = true`.
 
 ### 2.4 Paper source and statements
 
@@ -164,7 +172,8 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 `examples/toy/ledger/`). Computed nodes are never written by hand; they are recomputed.
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
-  (declared evidence type, section 3.5; default: the weakest), `files` (paths), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
+  (declared evidence type, section 3.5; default: the weakest), `files` (paths of what the claim shows or rests on; in the spec by content), `provenance` (paths recorded
+  but not attested, section 2.2), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
   for each configured adapter a list of references under its name (section 2.6). Any other field is an error.
 * **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
   declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
@@ -256,17 +265,20 @@ path may name a directory, whose digest is `H("tree", {relative path: sha256})` 
   produce the outputs) and `manual` (what a person did, with `person`), optional `code` (paths of scripts or
   project files that define the step), `note`, and `compare` (`bytes`, the default, or `none` for outputs
   that differ from run to run, such as rendered images with timestamps). A node `step:<name>` of kind `step` (asserted), content
-  `{name, command | manual, person, note, compare, outputs, code: {path: digest}}` (absent fields omitted), deps: its inputs and the
-  environment node. A `file:` node of an output depends on the step that produces it; a path may be the
+  `{name, command | manual, person, note, compare, environment, outputs, code: {path: digest}}` (absent fields omitted), deps: its
+  inputs, and the environment node if the step declares `environment = true` (a step that runs a tool the
+  environment describes, e.g. Lean; a Python generator does not depend on the Lean files). A `file:` node of an output depends on the step that produces it; a path may be the
   output of one step only. So a claim on a figure rests on the figure's file, the step that made it, that
   step's inputs, and so on down to the sources.
-* `[check.<name>]`: `command`, `inputs` (as for steps), optional `code`. A command that tests a claim against
+* `[check.<name>]`: `command`, `inputs` (as for steps), optional `code` and `environment` (as for steps). A command that tests a claim against
   data and exits 0 if the claim holds. `ledger.py check` runs every check and writes `ledger/checks.json`,
   the dump of the built-in adapter `checks` (prefix `check:`): kind `check`, content `{name, command, code,
-  inputs: {input: hash}, exit, stdout_sha256}`, **spec `{name, command, code}`**, status `ok`/`pass` or
-  `failed`/`fail`. Claims refer to checks with `checks = [...]`. The check node also depends on its inputs.
-  A recorded result whose inputs, command or code differ from the current ones is an error (run `check`
-  again), so `lock` cannot seal an outdated result; a failing check is recorded and shown, not hidden.
+  inputs: {input: hash}, exit, stdout_sha256, environment}` (`environment`, the hash of the environment files,
+  only for a check that declares it), **spec `{name, command, code}`** (plus `environment: true` if declared),
+  status `ok`/`pass` or `failed`/`fail`. Claims refer to checks with `checks = [...]`. The check node also
+  depends on its inputs, and on the environment node only if declared. A recorded result whose inputs,
+  command, code or (if declared) environment differ from the current ones is an error (run `check` again), so
+  `lock` cannot seal an outdated result; a failing check is recorded and shown, not hidden.
   Because the spec is the check's definition, new data or a re-run never resets an attestation on a claim
   that rests only on checks (the attestation says *this check tests what the claim says*), while a changed
   check does.
@@ -298,7 +310,7 @@ changes nothing in the project and records nothing in the ledger.
   ProVerif: `model:`);
 * `hyp:cited:<citation>` for each citation;
 * `data:<source>` for each source and `manual:<step>` for each manual step the claim rests on through its
-  files, sources, steps and checks;
+  files, sources, steps and checks (not through files it lists only under `provenance`);
 * `assertion:<name>` for each assertion on the claim;
 * `evidence:none` if the claim has neither adapter references, files nor sources.
 
@@ -311,12 +323,20 @@ hypothesis, sorted by id])`. Citations, assertions, files and adapter nodes are 
 claims that depend on them.
 
 `ledger/lock.json` stores all computed hashes and the root, together with `format` (the format version,
-`"0.2.0"`) and `tool` (the version of the program that wrote it, informational). `verify` refuses a lock
+`"0.3.0"`) and `tool` (the version of the program that wrote it, informational). `verify` refuses a lock
 file in a format it does not implement, recomputes everything from the artefacts and fails on any
 difference. The root is what gets published (e.g. in the arXiv comment field); see README.
 
 ## 6. Versions and migration
 
+* **0.3.0**: dependencies follow what actually influences a node. Steps and checks no longer depend on the
+  environment node unless they declare `environment = true` (a change to a Lean file no longer touches a
+  Python step or check, nor makes `checks.json` outdated: the environment is compared per declaring check, and
+  `checks.json` carries no dump-level `env_hash`). A file a claim attests enters the claim's spec by its
+  content alone (section 2.2). New claim field `provenance`: files in the graph and the root, not in the spec
+  or the register. Changed hashes: full hashes of steps, of files they produce and of check nodes (all
+  ledgers that use them); claim specs only of claims that attest a file produced by a step, or that use such a
+  claim. `migrate` reads 0.2.0 lock files.
 * **0.2.0**: Lean became an adapter like any other (section 2.6), with no Lean-specific rule left in the
   core. Changed hashes: the environment node (`{files, adapters}` instead of `{toolchain, files}`), adapter
   nodes (they depend on the environment node; `spec` payload `{kind, content}` with explicit `spec_deps`),
@@ -331,6 +351,11 @@ difference. The root is what gets published (e.g. in the arXiv comment field); s
   ledgers with such files change their root; their attestations stay current.
 * **0.1.0**: first versioned format (lock files with `format` `0` were written by its unversioned
   predecessor, with the same hashing).
+
+Migrating a ledger from 0.2.0: run `verify` with the old tool (the lock file must be current), install the new
+tool, move files that are only provenance from `files` to `provenance` where wanted, `ledger.py check` (the
+check dump is rewritten without its `env_hash`), then `ledger.py [-P paper] migrate --old-lock <old lock
+file>` and `lock`. Signed attestations on claims whose spec changed must be signed again.
 
 Migrating a ledger from 0.1.0: run `verify` with the old tool (the lock file must be current); convert the
 dumps (`python3 adapters/lean.py --from ledger/lean.json`, the ProVerif dump by `extract`) and the

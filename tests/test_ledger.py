@@ -818,7 +818,7 @@ class Lab(Example):
         L = self.L()
         self.assertEqual(L.errors, [])
         self.assertEqual(L.deps["file:results/g.json"], ["step:fit"])                    # outputs rest on their step
-        self.assertEqual(L.deps["step:fit"], ["env:lab", "file:data/calibration.json", "source:raw"])
+        self.assertEqual(L.deps["step:fit"], ["file:data/calibration.json", "source:raw"])  # no environment declared
         self.assertEqual(L.deps["file:data/calibration.json"], ["step:calibrate"])
         self.assertEqual(L.register["g-measured"], ["data:calibration-log", "data:raw", "manual:calibrate"])
         self.assertEqual(L.payload["source:calibration-log"]["provenance"], "asserted")   # data absent: recorded value
@@ -853,6 +853,49 @@ class Lab(Example):
         self.edit("checks/g_value.py", lambda t: t.replace("2 * r", "3 * r"))             # the check is weakened
         self.run_main("check")
         self.assertFalse(self.L().attestation_state("g-checked")[0][3])
+
+    def test_environment_only_where_declared(self):
+        L0 = self.L()
+        (self.p / "scripts" / "helper.py").write_text("# matched by [environment] files, used by no step\n")
+        L1 = self.L()
+        self.assertNotEqual(L1.full[L1.env], L0.full[L0.env])
+        self.assertEqual(L1.full["step:fit"], L0.full["step:fit"])               # a step without `environment`
+        self.assertEqual(L1.errors, [])                                           # the check results stay current
+        self.edit("ledger/data.toml", lambda t: t.replace("[step.fit]\n", "[step.fit]\nenvironment = true\n"))
+        self.assertIn("env:lab", self.L().deps["step:fit"])
+        self.edit("ledger/data.toml", lambda t: t.replace("[check.g-value]\n", "[check.g-value]\nenvironment = true\n"))
+        self.assertTrue(any("other inputs" in e for e in self.L().errors))       # recorded without the environment
+        self.run_main("check")
+        self.assertEqual(self.L().errors, [])
+        (self.p / "scripts" / "helper2.py").write_text("# another one\n")
+        self.assertTrue(any("other inputs" in e for e in self.L().errors))       # a declared environment moved on
+
+    def test_attested_file_binds_to_its_content(self):
+        self.run_main("attest", "g-measured", "--person", "X", "--level", "green")
+        self.edit("scripts/fit.py", lambda t: t + "\n# refactored, same output\n")   # the step that made the file
+        L = self.L()
+        self.assertTrue(L.attestation_state("g-measured")[0][3])                   # the file itself is unchanged
+        self.edit("results/g.json", lambda t: t.replace("9.7916", "9.7915"))
+        self.run_main("check")
+        self.assertFalse(self.L().attestation_state("g-measured")[0][3])           # what was attested changed
+
+    def test_provenance_recorded_not_attested(self):
+        self.edit("ledger/claims.toml", lambda t: t + '\n[claim.g-prov]\ntext = "g = 9.80 +- 0.03 m/s^2"\n'
+                  'checks = ["g-value"]\nprovenance = ["results/g.json"]\n'
+                  '\n[claim.only-prov]\ntext = "recorded only"\nprovenance = ["results/g.json"]\n')
+        self.run_main("attest", "g-prov", "--person", "X", "--level", "green")
+        L0 = self.L()
+        self.assertEqual(L0.errors, [])
+        self.assertIn("file:results/g.json", L0.deps["claim:g-prov"])             # in the graph, hence in the root
+        self.assertEqual(L0.register["only-prov"], ["evidence:none"])             # provenance is not evidence
+        self.edit("results/g.json", lambda t: t.replace("9.7916", "9.7915"))
+        self.run_main("check")
+        L1 = self.L()
+        self.assertNotEqual(L1.root_hash, L0.root_hash)
+        self.assertTrue(L1.attestation_state("g-prov")[0][3])                      # not part of the spec
+        rc, out = self.run_main("why", "only-prov")                                  # g-prov reaches the file through
+        self.assertIn("provenance (recorded in the root", out)                      # its check, which rests on it
+        self.assertNotIn("file:results/g.json", out.split("provenance (")[0])
 
     def test_commitment_checked_where_the_data_is(self):
         (self.p / "private").mkdir()
@@ -1011,7 +1054,7 @@ class Dvc(unittest.TestCase):
         self.assertEqual(L.steps["train"]["command"],
                          "cd work && sort ../data/prepared.txt > model.txt && wc -l < model.txt > ../metrics.txt")
         self.assertEqual(L.steps["train"]["outputs"], ["metrics.txt", "work/model.txt"])
-        self.assertEqual(L.deps["step:train"], ["env:dvc", "file:data/prepared.txt"])     # the chain across stages
+        self.assertEqual(L.deps["step:train"], ["file:data/prepared.txt"])     # the chain across stages
         self.assertEqual(L.deps["file:data/prepared.txt"], ["step:prepare"])
         self.assertEqual(lg.main(["-C", str(self.p), "reproduce"]), 0)
 
