@@ -226,6 +226,13 @@
     CONJECTURE: a claim without proof. The tool columns are machine checks and are shown in a neutral
     style.
 
+    \par\medskip\noindent\textbf{Attestations do not propagate.}
+    A green attestation on a result says that the attester has checked that the formal statement means
+    what the paper's statement means. The proof, including every lemma it uses, is what the tool checked.
+    A lemma attested only yellow therefore does not weaken a result whose formal proof uses it; its level
+    concerns the lemma's own statement in the text. What does carry over is listed with the result: the
+    hypotheses it is proved given, and evidence outside the tool's proof check.
+
     \par\medskip\noindent\textbf{How to check.}
     Recompute all hashes from the supplement and compare with the root above:
     \texttt{\LedgerVerify}. To also re-derive what the tools recorded, rerun them from the sources in the
