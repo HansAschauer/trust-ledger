@@ -173,7 +173,8 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
 
 * `[claim.<name>]`: `text` (statement as in the paper), optional `label` (LaTeX label), `evidence`
   (declared evidence type, section 3.5; default: the weakest), `files` (paths of what the claim shows or rests on; in the spec by content), `provenance` (paths recorded
-  but not attested, section 2.2), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), and
+  but not attested, section 2.2), `sources` (source names, section 3.4), `uses` (other claims), `cites` (citation names), `note` (free text, not hashed), `review_name` (the name filled into the `[review]`
+  templates for this claim, default the claim's name; section 3.3), and
   for each configured adapter a list of references under its name (section 2.6). Any other field is an error.
 * **One claim per label.** A labelled result of the paper is carried by exactly one claim, whose Lean
   declarations state *the whole result*. For a result with several parts, the project writes one Lean theorem
@@ -236,6 +237,9 @@ A model's back-translation of a claim's Lean statement and a model's comparison 
 back-translation are *generated* nodes (provenance `generated`) attached to the claim:
 
 * `reading`: `{path, sha256, produced_by}`, one per claim, from the file `[review] readings` (a template with `{claim}`).
+  `{claim}` is the claim's `review_name` if it has one, else its name; the same holds for `[review] extracts`. A claim
+  can so keep its name, and the attestations made under it, when its back-translation and extract are redone under
+  a new name (a version suffix, say).
 * `assessment`: `{claim, model, date, verdict, notes}` from `[assessment.<claim>]` tables; `verdict` is one of
   `consistent`, `partial` (faithful where formalised, but the claim covers only part of what the paper states under its
   label), `check`, `mismatch`, `unclear`; `notes` is a LaTeX fragment.
@@ -329,6 +333,7 @@ difference. The root is what gets published (e.g. in the arXiv comment field); s
 
 ## 6. Versions and migration
 
+* **0.3.0, additive**: claim field `review_name` (section 3.3); without it nothing changes.
 * **0.3.0**: dependencies follow what actually influences a node. Steps and checks no longer depend on the
   environment node unless they declare `environment = true` (a change to a Lean file no longer touches a
   Python step or check, nor makes `checks.json` outdated: the environment is compared per declaring check, and

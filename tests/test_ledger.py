@@ -385,6 +385,21 @@ class Latex(Toy):
         self.assertNotEqual(L2.root_hash, L1.root_hash)
         self.assertTrue(L2.attestation_state("lem-succ")[0][3])
 
+    def test_review_name_picks_a_newer_reading_without_renaming_the_claim(self):
+        self.reviewed()
+        (self.p / "paper" / "readings" / "lem-succ_v2.tex").write_text("\\paragraph{Reading} Version two.\n")
+        self.attest("lem-succ")
+        L0 = self.L()
+        cl = self.p / "ledger" / "claims.toml"
+        cl.write_text(cl.read_text().replace("[claim.lem-succ]\n", '[claim.lem-succ]\nreview_name = "lem-succ_v2"\n'))
+        L1 = self.L()
+        self.assertEqual(L1.errors, [])
+        self.assertEqual(L1.review_file("readings", "lem-succ").name, "lem-succ_v2.tex")
+        self.assertIn("paper/readings/lem-succ_v2.tex", [q["content"].get("path") for q in L1.payload.values()])
+        self.assertNotEqual(L1.root_hash, L0.root_hash)                        # the record shows the other reading
+        self.assertEqual(L1.cspec["lem-succ"], L0.cspec["lem-succ"])           # the statement hash does not move
+        self.assertTrue(L1.attestation_state("lem-succ")[0][3])
+
     def test_unknown_assessment_verdict_is_an_error(self):
         (self.p / "ledger" / "assessments.toml").write_text('[assessment.lem-succ]\nverdict = "great"\n')
         self.assertTrue(any("verdict" in e for e in self.L().errors))
