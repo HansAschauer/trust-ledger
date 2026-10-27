@@ -1707,7 +1707,7 @@ def review_definitions(L, names, extract_of):
             uses[n].append((name, next(k for k, v in enumerate(variants) if v[0] == block)))
         thms[n] = "\n\n".join(body)
     number = {name: k + 1 for k, name in enumerate(defs)}
-    out = ["\\clearpage\\onecolumn{\\Large\\bfseries Definitions}\\label{rv:defs}\\par\\smallskip",
+    out = ["\\clearpage\\onecolumn{\\Large\\bfseries Definitions}\\phantomsection\\label{rv:defs}\\par\\smallskip",
            "Every Lean definition that a claim's statement rests on, once, in the order in which they first occur. "
            "Each claim lists the numbers of the definitions it uses. A definition shown in several variants appears in "
            "different texts in the extracts of different claims; the claims are named.\\par\\medskip"]
@@ -1719,7 +1719,7 @@ def review_definitions(L, names, extract_of):
             who = f" {{\\small(variant used by {', '.join(tex_esc(u) for u in users)})}}" if len(variants) > 1 else ""
             back = ", ".join(f"\\rvlink{{rv:{u}}}{{\\texttt{{{tex_esc(u)}}}}}" for u in users) if len(users) <= 8 \
                 else f"{len(users)} claims"
-            out.append(f"\\noindent\\textbf{{{tag}}} \\texttt{{{tex_esc(name)}}}{who}\\label{{rv:def:{tag}}}"
+            out.append(f"\\noindent\\textbf{{{tag}}} \\texttt{{{tex_esc(name)}}}{who}\\phantomsection\\label{{rv:def:{tag}}}"
                        f"\\hfill{{\\footnotesize used by {back}}}\\par")
             out.append(lean_to_tex(block) + "\\par\\smallskip")
     refs = {n: [(f"D{number[name]}" + (chr(ord("a") + k) if len(defs[name]) > 1 else ""), name) for name, k in u]
@@ -1740,7 +1740,7 @@ def definition_refs(refs):
         if j - k >= 2:
             out.append(f"{link(refs[k][0])}--{link(refs[j][0])}")
         else:
-            out += [f"{link(t)}~\\texttt{{{tex_esc(name.split('.')[-1])}}} (p.~\\pageref{{rv:def:{t}}})" for t, name in refs[k:j + 1]]
+            out += [f"{link(t)}~\\texttt{{{tex_esc(name.split('.')[-1])}}} (p.~\\rvlink{{rv:def:{t}}}{{\\pageref{{rv:def:{t}}}}})" for t, name in refs[k:j + 1]]
         k = j + 1
     return ", ".join(out)
 
@@ -1907,7 +1907,7 @@ def review_toc(L, names, seeds, parsed, only):
         if not c.get("lean"):
             lean = r"\textit{no Lean}"
         out.append(w % (ref, r"\texttt{" + tex_esc(lab or "") + "}", r"\rvlink{rv:%s}{%s}" % (n, name),
-                        STATUS_WORDS.get(L.attestation_summary(n), "?"), r"\pageref{rv:%s}" % n, lean))
+                        STATUS_WORDS.get(L.attestation_summary(n), "?"), r"\rvlink{rv:%s}{\pageref{rv:%s}}" % (n, n), lean))
     out.append("}")
     return out
 
@@ -1915,6 +1915,13 @@ def review_toc(L, names, seeds, parsed, only):
 REVIEW_PREAMBLE = r"""\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \newlength{\lttw}
 \providecommand{\rvlink}[2]{\ifcsname hyperref\endcsname\hyperref[#1]{#2}\else #2\fi}
+\providecommand{\phantomsection}{}
+% The paper's own labels carry anchors of the paper's PDF, which this packet does not have: their references are
+% plain text here, and every link of the packet is an explicit \rvlink to a label of the packet.
+\makeatletter
+\ifcsname @refstar\endcsname\def\ref{\@ifstar\@refstar\@refstar}\fi
+\ifcsname @pagerefstar\endcsname\def\pageref{\@ifstar\@pagerefstar\@pagerefstar}\fi
+\makeatother
 \definecolor{rvpaper}{RGB}{31,94,165}\definecolor{rvread}{RGB}{176,112,0}\definecolor{rvlean}{RGB}{90,90,90}
 \newtcolorbox{rvbox}[2]{breakable,enhanced jigsaw,colback=#1!4!white,colframe=#1,boxrule=0.6pt,arc=1pt,left=5pt,right=5pt,
   top=3pt,bottom=3pt,fonttitle=\small\bfseries,coltitle=black,colbacktitle=#1!18!white,title={#2}}
@@ -1969,7 +1976,7 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
         head = f"Claim \\texttt{{{tex_esc(n)}}}" + (" \\textperiodcentered{} " + ", ".join(refs) if refs else "")
         out.append("\\clearpage\\onecolumn")  # again: a page break inside one-column mode can fall back to two columns (ltxgrid classes)
         out.append(f"\\gdef\\rvhead{{{head}}}")
-        out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\label{{rv:{n}}}\\par\\smallskip")
+        out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\phantomsection\\label{{rv:{n}}}\\par\\smallskip")
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
                    f"\\textbf{{Evidence}} {tex_esc(L.ev(c))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
                    f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
@@ -1985,7 +1992,7 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
             out.append("\\begin{rvbox}{rvread}{Back-translation}\n\\noindent\\textit{No back-translation file for this claim.}\n\\end{rvbox}")
         elif part:
             out.append("\\begin{rvbox}{rvread}{Back-translation, statement part (" + str(len(titles)) + " section"
-                       + ("s" if len(titles) > 1 else "") + f"; the whole reading is on p.~\\pageref{{rv:{n}:reading}})}}\n"
+                       + ("s" if len(titles) > 1 else "") + f"; the whole reading is on p.~\\rvlink{{rv:{n}:reading}}{{\\pageref{{rv:{n}:reading}}}})}}\n"
                        + part + "\n\\end{rvbox}")
         else:
             out.append("\\begin{rvbox}{rvread}{Back-translation, in full (no section of it is recognisable as the statement)}\n"
@@ -1993,7 +2000,7 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
         ex = extract_of(n)
         if with_lean and defrefs is not None and n in thms:
             used = definition_refs(defrefs[n])
-            out.append("\\begin{rvbox}{rvlean}{Lean statement (definitions: section Definitions, p.~\\pageref{rv:defs})}\n"
+            out.append("\\begin{rvbox}{rvlean}{Lean statement (definitions: section Definitions, p.~\\rvlink{rv:defs}{\\pageref{rv:defs}})}\n"
                        + lean_to_tex(thms[n].strip("\n")) + "\\par\\smallskip\n{\\small\\textbf{Uses the definitions} "
                        + (used or "none") + ".}\n\\end{rvbox}")
         elif with_lean and ex and ex.is_file():
@@ -2006,7 +2013,7 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
         out.append("\\medskip{\\large\\bfseries Details}\\par\\smallskip")
         out += review_relations_tex(L, n, names)
         if part:
-            out.append(f"{{\\bfseries Back-translation, whole}}\\label{{rv:{n}:reading}} {{\\small(generated by a model from the Lean text alone)}}\\par\\smallskip")
+            out.append(f"{{\\bfseries Back-translation, whole}}\\phantomsection\\label{{rv:{n}:reading}} {{\\small(generated by a model from the Lean text alone)}}\\par\\smallskip")
             out.append(reading + "\\par\\medskip")
         a = L.assessments.get(n)
         out.append("{\\bfseries Assessment} {\\small(generated by a model; an aid for the reviewer, not an attestation)}\\par\\smallskip")
