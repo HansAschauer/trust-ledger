@@ -1717,7 +1717,10 @@ def review_definitions(L, names, extract_of):
         for k, (block, users) in enumerate(variants):
             tag = f"D{number[name]}" + (chr(ord("a") + k) if len(variants) > 1 else "")
             who = f" {{\\small(variant used by {', '.join(tex_esc(u) for u in users)})}}" if len(variants) > 1 else ""
-            out.append(f"\\noindent\\textbf{{{tag}}} \\texttt{{{tex_esc(name)}}}{who}\\label{{rv:def:{tag}}}\\par")
+            back = ", ".join(f"\\rvlink{{rv:{u}}}{{\\texttt{{{tex_esc(u)}}}}}" for u in users) if len(users) <= 8 \
+                else f"{len(users)} claims"
+            out.append(f"\\noindent\\textbf{{{tag}}} \\texttt{{{tex_esc(name)}}}{who}\\label{{rv:def:{tag}}}"
+                       f"\\hfill{{\\footnotesize used by {back}}}\\par")
             out.append(lean_to_tex(block) + "\\par\\smallskip")
     refs = {n: [(f"D{number[name]}" + (chr(ord("a") + k) if len(defs[name]) > 1 else ""), name) for name, k in u]
             for n, u in uses.items()}
@@ -1733,94 +1736,290 @@ def definition_refs(refs):
         j = k
         while j + 1 < len(refs) and refs[j][0][1:].isdigit() and refs[j + 1][0] == f"D{int(refs[j][0][1:]) + 1}":
             j += 1  # variants (D7a, D7b) are never part of a range
+        link = lambda t: f"\\rvlink{{rv:def:{t}}}{{{t}}}"
         if j - k >= 2:
-            out.append(f"{refs[k][0]}--{refs[j][0]}")
+            out.append(f"{link(refs[k][0])}--{link(refs[j][0])}")
         else:
-            out += [f"{t}~\\texttt{{{tex_esc(name.split('.')[-1])}}} (p.~\\pageref{{rv:def:{t}}})" for t, name in refs[k:j + 1]]
+            out += [f"{link(t)}~\\texttt{{{tex_esc(name.split('.')[-1])}}} (p.~\\pageref{{rv:def:{t}}})" for t, name in refs[k:j + 1]]
         k = j + 1
     return ", ".join(out)
 
 
-def review_body(L, only=None, with_lean=True, defs_once=True):
-    """LaTeX body of the review packet of the selected paper: for each claim the paper's statement, the model's
-    back-translation of the Lean statement, a model's short assessment and the Lean text."""
+READING_HEAD = re.compile(r"\\(paragraph|subparagraph)\{")
+READING_STMT = re.compile(r"translation|theorem|lemma|proposition|corollary|statement|conclusion|claim|result|hypothes|"
+                          r"assumption", re.I)
+READING_OTHER = re.compile(r"plain-language|setting|notation|object|definition|point|caveat|unexpected|reader|remark|"
+                           r"convention|interpretation", re.I)
+
+
+def brace_end(s, i):
+    """Index of the brace closing the one at s[i]."""
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return len(s) - 1
+
+
+def reading_headings(tex):
+    r"""Headings of a back-translation (pandoc writes # as \paragraph, ## as \subparagraph):
+    [(start, end of heading, level, plain title)]."""
+    out = []
+    for m in READING_HEAD.finditer(tex):
+        e = brace_end(tex, m.end() - 1)
+        title = tex[m.end():e]
+        t = re.match(r"\\texorpdfstring\{", title)
+        if t:  # the second argument is the plain text
+            a = brace_end(title, t.end() - 1)
+            title = title[a + 2:brace_end(title, a + 1)]
+        out.append((m.start(), e + 1, 0 if m.group(1) == "paragraph" else 1,
+                    " ".join(re.sub(r"\\[a-zA-Z]+|[{}]", "", title).split())))
+    return out
+
+
+def reading_statement(tex):
+    """The part of a back-translation that states the theorem(s), for the comparison with the paper: the sections
+    whose heading names a theorem, statement, hypotheses or conclusion, not the setting, notation or caveats. A heading
+    with sub-sections counts only through them, or, if none of them qualifies, through its own lead text.
+    Returns (LaTeX, [section titles]); ("", []) if no section qualifies (the reading has no fixed structure)."""
+    hs, parts = reading_headings(tex), []
+    stmt = lambda t: READING_STMT.search(t) and not READING_OTHER.search(t)
+    for k, (s, e, lvl, title) in enumerate(hs):
+        if parts and parts[-1][1] > s:
+            continue
+        end = next((h[0] for h in hs[k + 1:] if h[2] <= lvl), len(tex))
+        kids = [h for h in hs[k + 1:] if h[0] < end]
+        if not kids:
+            if stmt(title):
+                parts.append((s, end, title))
+        elif not any(stmt(h[3]) for h in kids) and READING_STMT.search(title) and len(tex[e:kids[0][0]].strip()) > 200:
+            parts.append((s, kids[0][0], title))
+    return "\n".join(tex[s:e] for s, e, _ in parts), [t for *_, t in parts]
+
+
+def strip_labels(tex):
+    return re.sub(r"\\label\{[^}]*\}", "", tex)
+
+
+REF = re.compile(r"\\(?:eq|c|C|auto|page)?ref\{([^}]*)\}")
+
+
+def paper_proof_refs(L, lab):
+    """Labels the paper's proof of the result `lab` refers to: the proof environment whose optional argument names
+    `lab` ("Proof of Theorem~\ref{lab}"), else the first proof after the statement, before the next statement.
+    Reading aids (`[review] skip_envs`) are left out. [] if the result has no proof in the paper."""
+    text = strip_comments(L.flat.get(L.paper, ""))
+    for env in L.cfg.get("review", {}).get("skip_envs", []):
+        text = re.sub(r"\\begin\{" + re.escape(env) + r"\}.*?\\end\{" + re.escape(env) + r"\}", "", text, flags=re.S)
+    m = re.search(r"\\label\{" + re.escape(lab) + r"\}", text)
+    if not m:
+        return []
+    proof = None
+    for p in re.finditer(r"\\begin\{proof\}(\[[^\n]*?\])?", text):
+        if p.group(1) and re.search(r"\{" + re.escape(lab) + r"\}", p.group(1)):
+            proof = p; break
+    if proof is None:
+        nxt = re.compile(r"\\begin\{(" + "|".join(sorted(STATEMENT_ENVS | RESULT_ENVS)) + r")\*?\}")
+        after = text[m.end():]
+        p, q = re.search(r"\\begin\{proof\}(\[[^\n]*?\])?", after), nxt.search(after)
+        if not p or (q and q.start() < p.start()) or (p.group(1) and REF.search(p.group(1))):
+            return []
+        proof = p
+        start = m.end() + p.end()
+    else:
+        start = proof.end()
+    end = text.find("\\end{proof}", start)
+    body = text[start:end if end >= 0 else len(text)]
+    return [x.strip() for g in REF.findall(body) for x in g.split(",") if x.strip() and x.strip() != lab]
+
+
+def review_scope(L, targets):
+    """Claims to review for the given labels or claim names: those claims and everything they rest on, through
+    `uses`, through the Lean proofs (the claims they have as steps) and through the paper's proofs (the results
+    and equations a proof refers to), transitively."""
+    owner = {lab: n for n, c in L.claims.items() for lab in claim_labels(c)}
+    seeds = set()
+    for t in targets:
+        hit = {n for n, c in L.claims.items() if t == n or t in claim_labels(c)}
+        if not hit:
+            sys.exit(f"review --for: {t} is neither a claim nor a label of a claim")
+        seeds |= hit
+    steps = {}  # claim -> the claims that are steps of it
+    for n in L.claims:
+        for m in L.used_in(n):
+            steps.setdefault(m, set()).add(n)
+    todo, seen = list(seeds), set()
+    while todo:
+        n = todo.pop()
+        if n not in seen:
+            seen.add(n)
+            todo += [u for u in L.claims[n].get("uses", []) if u in L.claims] + sorted(steps.get(n, ()))
+            todo += [owner[r] for lab in claim_labels(L.claims[n]) for r in paper_proof_refs(L, lab) if r in owner]
+    return seen, seeds
+
+
+def claim_labels(c):
+    return c.get("labels") or ([c["label"]] if c.get("label") else [])
+
+
+def labels_in_paper_order(L, c):
+    flat = L.flat.get(c.get("paper"), "")
+    pos = lambda lab: (m.start() if (m := re.search(r"\\label\{" + re.escape(lab) + r"\}", flat)) else 10 ** 9)
+    return sorted(claim_labels(c), key=pos)
+
+
+STATUS_WORDS = {"green": "GREEN", "yellow": "YELLOW", "conjecture": "CONJECTURE", "stale": "STALE", "none": "--"}
+
+
+def review_toc(L, names, seeds, parsed, only):
+    """Contents of the packet: one row per paper label, in the order of the paper, with the claim carrying it,
+    its Lean declarations and its attestation; result labels the ledger does not cover are listed too."""
+    flat = L.flat.get(L.paper, "")
+    pos = lambda lab: (m.start() if (m := re.search(r"\\label\{" + re.escape(lab) + r"\}", flat)) else 10 ** 9)
+    rows = [(pos(lab), lab, n) for n in names for lab in claim_labels(L.claims[n])]
+    rows += [(10 ** 9, None, n) for n in names if not claim_labels(L.claims[n])]
+    if rows:
+        lo, hi = min(r[0] for r in rows), max(r[0] for r in rows if r[0] < 10 ** 9) if any(r[0] < 10 ** 9 for r in rows) else 0
+        for lab in L.uncovered():
+            if only is None or lo <= pos(lab) <= hi:
+                rows.append((pos(lab), lab, None))
+    rows.sort(key=lambda r: (r[0], r[2] or ""))
+    w = r"\noindent\makebox[2.7cm][l]{%s}\makebox[3.4cm][l]{%s}\makebox[3.1cm][l]{%s}\makebox[2.1cm][l]{%s}\makebox[0.9cm][r]{%s}\hspace{0.3cm}\parbox[t]{\dimexpr\linewidth-12.5cm\relax}{\raggedright %s}\par"
+    out = [r"\medskip{\large\bfseries Contents}\par\smallskip",
+           r"{\small One row per labelled result in the order of the paper. Claim and page link to the claim's pages;"
+           r" status is the strongest current attestation (" + ("\\textbf{bold}: a claim asked for with \\texttt{--for}; the others are what it rests on; "
+                                                              if seeds else "") + r"STALE: only attestations of an earlier statement).}\par\smallskip",
+           r"{\footnotesize", w % (r"\textbf{Paper}", r"\textbf{Label}", r"\textbf{Claim}", r"\textbf{Status}", r"\textbf{p.}", r"\textbf{Lean}"),
+           r"\vspace{2pt}\hrule\vspace{3pt}"]
+    for _, lab, n in rows:
+        ref = (reference_tex(lab, parsed, L.kind_words) or "") if lab else "(no label)"
+        if n is None:
+            out.append(w % (ref, r"\texttt{" + tex_esc(lab) + "}", r"\textit{not in the ledger}", "", "", ""))
+            continue
+        c = L.claims[n]
+        name = r"\texttt{" + tex_esc(n) + "}"
+        name = r"\textbf{" + name + "}" if n in seeds else name
+        lean = ", ".join(tex_esc(d.split(".")[-1]) for d in c.get("lean", [])) or ("--" if not c.get("lean") else "")
+        if not c.get("lean"):
+            lean = r"\textit{no Lean}"
+        out.append(w % (ref, r"\texttt{" + tex_esc(lab or "") + "}", r"\rvlink{rv:%s}{%s}" % (n, name),
+                        STATUS_WORDS.get(L.attestation_summary(n), "?"), r"\pageref{rv:%s}" % n, lean))
+    out.append("}")
+    return out
+
+
+REVIEW_PREAMBLE = r"""\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\newlength{\lttw}
+\providecommand{\rvlink}[2]{\ifcsname hyperref\endcsname\hyperref[#1]{#2}\else #2\fi}
+\definecolor{rvpaper}{RGB}{31,94,165}\definecolor{rvread}{RGB}{176,112,0}\definecolor{rvlean}{RGB}{90,90,90}
+\newtcolorbox{rvbox}[2]{breakable,enhanced jigsaw,colback=#1!4!white,colframe=#1,boxrule=0.6pt,arc=1pt,left=5pt,right=5pt,
+  top=3pt,bottom=3pt,fonttitle=\small\bfseries,coltitle=black,colbacktitle=#1!18!white,title={#2}}
+\gdef\rvhead{}
+\makeatletter
+\def\ps@rvpage{\def\@oddhead{\footnotesize\rvhead\hfil\thepage}\let\@evenhead\@oddhead
+  \def\@oddfoot{}\let\@evenfoot\@oddfoot}
+\makeatother
+\onecolumn
+\setlength{\parindent}{0pt}\setlength{\parskip}{4pt}
+\pagestyle{rvpage}"""
+
+
+def review_body(L, only=None, with_lean=True, defs_once=True, seeds=()):
+    """LaTeX body of the review packet of the selected paper. Contents (one row per label), then for each claim a
+    comparison page (the paper's statement, the statement part of the model's back-translation, the Lean theorem)
+    and its details (relations, what it rests on, the whole back-translation, the assessment); the Lean definitions
+    once, in a section of their own. `seeds`: the claims asked for (shown in bold in the contents)."""
     rv = L.cfg.get("review", {})
     parsed = L.parsed.get(L.paper) or [x for v in L.parsed.values() for x in v]
-    root = L.root
     names = [n for n in L.claims if not only or n in only]
     names.sort(key=lambda n: (L.label_position(L.claims[n]) or (1, 0), n))
-    out = [r"\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}",
-           r"\newlength{\lttw}", r"\onecolumn", r"\setlength{\parindent}{0pt}", r"\setlength{\parskip}{4pt}",
-           r"\pagestyle{plain}"]
+    out = [REVIEW_PREAMBLE]
     out.append(r"{\Large\bfseries Review packet for the claims of the paper ``%s''}\par\medskip" % tex_esc(L.paper))
     out.append(r"Ledger root of the paper (this packet is not part of it): \texttt{%s}.\par" % L.root_hash[:32])
-    out.append(r"""\medskip\textbf{How to use.} Each claim has its own page(s): \emph{In the paper} is the statement as typeset in the
-paper, with the paper's numbers and the page where it stands (page numbers refer to the plain build of the paper made for this packet). \emph{Back-translation}
-is what a model reads out of the Lean statement alone; \emph{Assessment} is a model's short comparison of the three. Both are
-generated aids and can share a model's blind spots; neither is an attestation. \emph{Lean statement} is the source the back-translation
-was made from. Under the header, \emph{Relations} names the claims whose Lean proofs use this one (\emph{step of}) and the
-declared \texttt{uses} links; a framed box lists everything the claim rests on beyond kernel-checked Lean (assertions, hypotheses,
-cited results, also those inherited through \texttt{uses}) and other evidence such as scripts. Attesting a claim covers its statement,
-not the items in that box. To attest after reading: \texttt{ledger.py -P %s attest CLAIM --person NAME --level yellow --reason spec}.\par
-\medskip\textbf{Verdicts.} CONSISTENT: no difference found between paper, back-translation and Lean text. PARTIAL: faithful where it formalises, but this claim covers only part of what the paper states under its label (the rest is in a sibling claim or not formalised; see the notes). CHECK: something specific to look at, see the notes.
-MISMATCH: a difference that probably needs a fix in the text or in the formalisation. UNCLEAR: could not be decided.\par
-\medskip\textbf{Claims} (page):\par\smallskip""" % tex_esc(L.paper))
-    idx = ", ".join(f"\\texttt{{{tex_esc(n)}}}~(\\pageref{{rv:{n}}})" for n in names)
-    out.append("{\\small " + idx + "}")
+    out.append(r"""\medskip\textbf{How to use.} Each claim starts on a new page with the \emph{comparison}: three boxes,
+\textcolor{rvpaper}{\textbf{Paper}} (the statement as typeset in the paper, with its number and page; page numbers refer to the
+plain build of the paper made for this packet), \textcolor{rvread}{\textbf{Back-translation}} (the part of a model's reading of
+the Lean statement that states the theorem; the model saw the Lean text alone) and \textcolor{rvlean}{\textbf{Lean}} (the
+theorem as stated, with links to the definitions it uses). The \emph{details} follow: relations to other claims, a framed list
+of everything the claim rests on beyond kernel-checked Lean (assertions, hypotheses, cited results, scripts; attesting a claim
+covers its statement, not these items), the whole back-translation with its setting and caveats, and a model's
+\emph{assessment}. Back-translation and assessment are generated aids and can share a model's blind spots; neither is an
+attestation. To attest after reading: \texttt{ledger.py -P %s attest CLAIM --person NAME --level yellow|green --reason ...}.\par
+\medskip\textbf{Verdicts of the assessments.} CONSISTENT: no difference found between paper, back-translation and Lean text.
+PARTIAL: faithful where it formalises, but this claim covers only part of what the paper states under its label. CHECK: something
+specific to look at, see the notes. MISMATCH: a difference that probably needs a fix in the text or in the formalisation.
+UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
+    out += review_toc(L, names, set(seeds), parsed, only)
     extract_of = lambda n: L.review_file("extracts", n)
     defrefs = thms = None
+    defs_section = []
     if with_lean and defs_once:
-        section, defrefs, thms = review_definitions(L, names, extract_of)
-        out += section
+        defs_section, defrefs, thms = review_definitions(L, names, extract_of)
     for n in names:
         c = L.claims[n]
-        labels = c.get("labels") or ([c["label"]] if c.get("label") else [])
-        where = []
-        for lab in labels:
-            ref = reference_tex(lab, parsed, L.kind_words)
-            where.append(f"{ref or tex_esc(lab)} (p.~\\pageref{{{lab}}})")
+        labels = labels_in_paper_order(L, c)
+        refs = [reference_tex(lab, parsed, L.kind_words) or tex_esc(lab) for lab in labels]
+        where = [f"{r} (p.~\\pageref{{{lab}}})" for r, lab in zip(refs, labels)]
         att = L.attestation_state(n)
         atts = "; ".join(f"{lvl.upper()} by {tex_esc(p)}" + ("" if cur else " (stale)") for p, lvl, _, cur in att) or "not yet attested"
+        head = f"Claim \\texttt{{{tex_esc(n)}}}" + (" \\textperiodcentered{} " + ", ".join(refs) if refs else "")
         out.append("\\clearpage\\onecolumn")  # again: a page break inside one-column mode can fall back to two columns (ltxgrid classes)
+        out.append(f"\\gdef\\rvhead{{{head}}}")
         out.append(f"{{\\Large\\bfseries Claim \\texttt{{{tex_esc(n)}}}}}\\label{{rv:{n}}}\\par\\smallskip")
         out.append(f"{{\\small \\textbf{{In the paper:}} {'; '.join(where) or 'no label (ledger text only)'}.\\quad "
                    f"\\textbf{{Evidence}} {tex_esc(L.ev(c))}; \\textbf{{Lean}}: {lean_status_words(L, n)}; "
                    f"\\textbf{{attestation}}: {atts}.}}\\par\\medskip")
-        out += review_relations_tex(L, n, names)
-        out.append("{\\large\\bfseries In the paper}\\par\\smallskip")
+        # -- comparison
         seen = set()
-        if labels:
-            out += [review_statement_tex(L, lab, parsed, seen) for lab in labels]
-        else:
-            out.append("\\noindent\\textit{No label in the paper; text recorded in the ledger:} " + tex_esc(L.stmt[n][0]))
-        out.append("\\par\\medskip")
+        paper = "\n".join(review_statement_tex(L, lab, parsed, seen) for lab in labels) if labels else \
+            "\\noindent\\textit{No label in the paper; text recorded in the ledger:} " + tex_esc(L.stmt[n][0])
+        out.append("\\begin{rvbox}{rvpaper}{Paper: " + (", ".join(where) or "ledger text") + "}\n" + paper + "\n\\end{rvbox}")
         rd = L.review_file("readings", n)
-        out.append("{\\large\\bfseries Back-translation of the Lean statement} {\\small(generated by a model from the Lean text alone)}\\par\\smallskip")
-        out.append(f"\\input{{readings/{n}}}" if rd and rd.is_file() else "\\noindent\\textit{No back-translation file for this claim.}")
-        out.append("\\par\\medskip")
+        reading = strip_labels(rd.read_text(errors="replace")) if rd and rd.is_file() else ""
+        part, titles = reading_statement(reading) if reading else ("", [])
+        if not reading:
+            out.append("\\begin{rvbox}{rvread}{Back-translation}\n\\noindent\\textit{No back-translation file for this claim.}\n\\end{rvbox}")
+        elif part:
+            out.append("\\begin{rvbox}{rvread}{Back-translation, statement part (" + str(len(titles)) + " section"
+                       + ("s" if len(titles) > 1 else "") + f"; the whole reading is on p.~\\pageref{{rv:{n}:reading}})}}\n"
+                       + part + "\n\\end{rvbox}")
+        else:
+            out.append("\\begin{rvbox}{rvread}{Back-translation, in full (no section of it is recognisable as the statement)}\n"
+                       + reading + "\n\\end{rvbox}")
+        ex = extract_of(n)
+        if with_lean and defrefs is not None and n in thms:
+            used = definition_refs(defrefs[n])
+            out.append("\\begin{rvbox}{rvlean}{Lean statement (definitions: section Definitions, p.~\\pageref{rv:defs})}\n"
+                       + lean_to_tex(thms[n].strip("\n")) + "\\par\\smallskip\n{\\small\\textbf{Uses the definitions} "
+                       + (used or "none") + ".}\n\\end{rvbox}")
+        elif with_lean and ex and ex.is_file():
+            text = ex.read_text(errors="replace")
+            text = re.sub(r"\A\s*/-.*?-/\s*", "", text, count=1, flags=re.S) if text.lstrip().startswith("/-") else text
+            text = re.sub(r"(?m)^import .*\n", "", text)
+            out.append("\\begin{rvbox}{rvlean}{Lean statement (source extract: definitions, then the statement)}\n"
+                       + lean_to_tex(text.strip("\n")) + "\n\\end{rvbox}")
+        # -- details
+        out.append("\\medskip{\\large\\bfseries Details}\\par\\smallskip")
+        out += review_relations_tex(L, n, names)
+        if part:
+            out.append(f"{{\\bfseries Back-translation, whole}}\\label{{rv:{n}:reading}} {{\\small(generated by a model from the Lean text alone)}}\\par\\smallskip")
+            out.append(reading + "\\par\\medskip")
         a = L.assessments.get(n)
-        out.append("{\\large\\bfseries Assessment} {\\small(generated by a model; an aid for the reviewer, not an attestation)}\\par\\smallskip")
+        out.append("{\\bfseries Assessment} {\\small(generated by a model; an aid for the reviewer, not an attestation)}\\par\\smallskip")
         if a:
             out.append(f"\\noindent\\textbf{{{VERDICT_TEXT.get(a.get('verdict'), a.get('verdict', '?'))}}} "
                        f"{{\\small({tex_esc(a.get('model', '?'))}, {tex_esc(a.get('date', ''))})}}\\par\n{a.get('notes', '')}")
         else:
             out.append("\\noindent\\textit{No assessment yet.}")
-        ex = extract_of(n)
-        if with_lean and defrefs is not None and n in thms:
-            used = definition_refs(defrefs[n])
-            out.append("\\par\\medskip{\\large\\bfseries Lean statement} {\\small(the statement from the source extract; "
-                       "its definitions are in the section Definitions)}\\par\\smallskip")
-            out.append("{\\small\\textbf{Uses the definitions} " + (used or "none")
-                       + " (section Definitions, p.~\\pageref{rv:defs}).}\\par\\smallskip")
-            out.append(lean_to_tex(thms[n].strip("\n")))
-        elif with_lean and ex and ex.is_file():
-            text = ex.read_text(errors="replace")
-            text = re.sub(r"\A\s*/-.*?-/\s*", "", text, count=1, flags=re.S) if text.lstrip().startswith("/-") else text
-            text = re.sub(r"(?m)^import .*\n", "", text)
-            out.append("\\par\\medskip{\\large\\bfseries Lean statement} {\\small(source extract: definitions, then the statement)}\\par\\smallskip")
-            out.append(lean_to_tex(text.strip("\n")))
+    if defs_section:
+        out.append("\\gdef\\rvhead{Definitions}")
+        out += defs_section
     if L.scope_hyps:
-        out.append("\\clearpage\\onecolumn{\\Large\\bfseries Hypotheses}\\par\\smallskip")
+        out.append("\\clearpage\\onecolumn\\gdef\\rvhead{Hypotheses}{\\Large\\bfseries Hypotheses}\\par\\smallskip")
         for h in L.scope_hyps:
             meta = L.hypotheses.get(h, {})
             out.append(f"\\noindent\\textbf{{\\texttt{{{tex_esc(h)}}}}}\\quad cites: {tex_esc(', '.join(meta.get('cites', [])) or 'nothing')}.\\par")
@@ -1877,10 +2076,14 @@ def cmd_review(L, args):
                 if rp.is_file():
                     shutil.copy(rp, work / "readings" / f"{n}.tex")
         only = set(args.claims.split(",")) if args.claims else None
-        body = review_body(L, only, with_lean=not args.no_lean, defs_once=not args.defs_inline)
+        seeds = ()
+        if getattr(args, "for_", None):
+            scope, seeds = review_scope(L, [t.strip() for t in args.for_.split(",") if t.strip()])
+            only = scope if only is None else only | scope
+        body = review_body(L, only, with_lean=not args.no_lean, defs_once=not args.defs_inline, seeds=seeds)
         (work / "review-body.tex").write_text(body)
         # amsmath/amssymb: the packet uses starred display environments and \\tag, whatever the paper loads
-        inject = ("\\AddToHook{begindocument/before}{\\RequirePackage{amsmath,amssymb}}"
+        inject = ("\\AddToHook{begindocument/before}{\\RequirePackage{amsmath,amssymb,tcolorbox}\\tcbuselibrary{breakable,skins}}"
                   "\\AddToHook{begindocument/end}{\\ifcsname ledgercheck@placedtrue\\endcsname\\csname ledgercheck@placedtrue\\endcsname\\fi"
                   "\\input{review-body}\\end{document}}\\input{" + main.stem + "}")  # no ledger appendix in the packet (csname: '@' is not a letter here)
         log = ""
@@ -2204,6 +2407,8 @@ def main(argv=None):
     sub.add_parser("lock"); sub.add_parser("verify"); sub.add_parser("extract"); sub.add_parser("tex")
     p = sub.add_parser("review", help="build a review packet: paper statements next to back-translations and Lean text")
     p.add_argument("--claims", help="comma-separated claim names (default: all in scope)")
+    p.add_argument("--for", dest="for_", metavar="TARGETS",
+                   help="comma-separated labels or claim names: those claims and everything they rest on (uses, Lean steps)")
     p.add_argument("--out", help="output directory (default: [review] out, else ./review)")
     p.add_argument("--aux", help="use this .aux of the paper instead of building the paper once")
     p.add_argument("--no-lean", action="store_true", help="leave the Lean source text out")

@@ -400,6 +400,15 @@ class Latex(Toy):
         self.assertEqual(L1.cspec["lem-succ"], L0.cspec["lem-succ"])           # the statement hash does not move
         self.assertTrue(L1.attestation_state("lem-succ")[0][3])
 
+    def test_paper_proof_refs(self):
+        self.tex("chapters/results.tex", lambda t: t.replace("\\end{theorem}", "\\end{theorem}\n\\begin{proof}\nBy Lemma~\\ref{lem:succ}.\n"
+                 "\\begin{explainer}{Aid}\nSee \\eqref{eq:f}.\n\\end{explainer}\n\\end{proof}\n", 1))
+        cfg = self.p / "ledger" / "ledger.toml"
+        cfg.write_text(cfg.read_text() + '\n[review]\nskip_envs = ["explainer"]\n')
+        L = self.L()
+        self.assertEqual(lg.paper_proof_refs(L, "thm:twice"), ["lem:succ"])     # the aid's reference is left out
+        self.assertEqual(lg.paper_proof_refs(L, "lem:succ"), [])                # a statement without a proof
+
     def test_unknown_assessment_verdict_is_an_error(self):
         (self.p / "ledger" / "assessments.toml").write_text('[assessment.lem-succ]\nverdict = "great"\n')
         self.assertTrue(any("verdict" in e for e in self.L().errors))
@@ -442,7 +451,9 @@ class Latex(Toy):
         self.assertLess(body.index("lem-succ"), body.index("thm-twice"))
         self.assertIn("CONSISTENT", body)
         self.assertIn("The successor is larger", (self.p / "paper" / "readings" / "lem-succ.tex").read_text())
-        self.assertIn("\\input{readings/lem-succ}", body)
+        self.assertIn("The successor is larger", body)                         # the reading, inline, in its box
+        self.assertIn("\\begin{rvbox}{rvread}", body)
+        self.assertIn("\\rvlink{rv:lem-succ}", body)                          # the contents link to the claim
 
     @unittest.skipUnless(shutil.which("latexmk") and shutil.which("pdflatex") and shutil.which("pdftotext"),
                          "needs latexmk, pdflatex and pdftotext")
@@ -1130,9 +1141,25 @@ class ReviewDefinitions(unittest.TestCase):
 
     def test_definition_refs_ranges(self):
         r = lg.definition_refs([("D3", "x"), ("D1", "a"), ("D2", "b"), ("D7b", "nuc"), ("D9", "c")])
-        self.assertTrue(r.startswith("D1--D3, "))
-        self.assertIn("D7b~\\texttt{nuc}", r)
-        self.assertIn("D9~\\texttt{c}", r)
+        self.assertTrue(r.startswith("\\rvlink{rv:def:D1}{D1}--\\rvlink{rv:def:D3}{D3}, "))
+        self.assertIn("\\rvlink{rv:def:D7b}{D7b}~\\texttt{nuc}", r)
+        self.assertIn("\\rvlink{rv:def:D9}{D9}~\\texttt{c}", r)
+
+    def test_review_for_a_result_takes_what_it_rests_on(self):
+        L = lg.Ledger(TOY)
+        scope, seeds = lg.review_scope(L, ["thm:twice"])
+        self.assertEqual(seeds, {"thm-twice"})
+        self.assertIn("lem-succ", scope)                                        # a step of its Lean proof, and in `uses`
+        self.assertNotIn("conj-general", scope)                                 # rests on thm-twice, not the other way
+
+    def test_statement_part_of_a_reading(self):
+        tex = ("\\paragraph{Plain-language statement of t}\\label{a}\n\n\\subparagraph{Setting}\nObjects.\n"
+               "\\subparagraph{Theorem t}\nFor all n, P(n).\n\\subparagraph{Points a reader might not expect}\nCaveat.\n")
+        part, titles = lg.reading_statement(tex)
+        self.assertEqual(titles, ["Theorem t"])
+        self.assertIn("For all n, P(n).", part)
+        self.assertNotIn("Objects.", part); self.assertNotIn("Caveat.", part)
+        self.assertEqual(lg.reading_statement("No headings at all."), ("", []))
 
 
 class Egg(unittest.TestCase):

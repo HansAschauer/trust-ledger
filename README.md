@@ -225,6 +225,11 @@ paragraph and the paragraph before it), the model-generated back-translation of 
 model-written assessment (`ledger/assessments.toml`) and the Lean text. It builds the paper once in a scratch
 directory for its `.aux`, so it never touches your build files, and it needs `latexmk` and `pdflatex`.
 Configure it with a `[review]` table (`readings`, `extracts`, `skip_envs` for reading aids such as explainer boxes).
+The packet opens with a contents table (one row per paper label: number, claim, attestation, Lean declarations); each
+claim starts with a comparison page (three boxes: the paper's statement, the statement part of the back-translation,
+the Lean theorem with links to its definitions), followed by its details. `review --for thm:main,...` takes the claims
+of those labels and everything they rest on: `uses`, the steps of their Lean proofs and the results the paper's proofs
+refer to.
 Both templates take `{claim}`; a claim with `review_name = "..."` uses that name instead, for a back-translation
 redone under a new name while the claim keeps its own.
 The Lean definitions of all extracts are shown once, numbered, in a section Definitions; each claim shows only its
