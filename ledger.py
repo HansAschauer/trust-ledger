@@ -1916,6 +1916,7 @@ REVIEW_PREAMBLE = r"""\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setl
 \newlength{\lttw}
 \providecommand{\rvlink}[2]{\ifcsname hyperref\endcsname\hyperref[#1]{#2}\else #2\fi}
 \providecommand{\phantomsection}{}
+\ifcsname NoHyper\endcsname\else\newenvironment{NoHyper}{}{}\fi % the paper's citations: no links to a bibliography the packet lacks
 % The paper's own labels carry anchors of the paper's PDF, which this packet does not have: their references are
 % plain text here, and every link of the packet is an explicit \rvlink to a label of the packet.
 \makeatletter
@@ -1984,7 +1985,8 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
         seen = set()
         paper = "\n".join(review_statement_tex(L, lab, parsed, seen) for lab in labels) if labels else \
             "\\noindent\\textit{No label in the paper; text recorded in the ledger:} " + tex_esc(L.stmt[n][0])
-        out.append("\\begin{rvbox}{rvpaper}{Paper: " + (", ".join(where) or "ledger text") + "}\n" + paper + "\n\\end{rvbox}")
+        out.append("\\begin{rvbox}{rvpaper}{Paper: " + (", ".join(where) or "ledger text") + "}\n\\begin{NoHyper}" + paper
+                   + "\\end{NoHyper}\n\\end{rvbox}")
         rd = L.review_file("readings", n)
         reading = strip_labels(rd.read_text(errors="replace")) if rd and rd.is_file() else ""
         part, titles = reading_statement(reading) if reading else ("", [])
@@ -2031,7 +2033,7 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
             meta = L.hypotheses.get(h, {})
             out.append(f"\\noindent\\textbf{{\\texttt{{{tex_esc(h)}}}}}\\quad cites: {tex_esc(', '.join(meta.get('cites', [])) or 'nothing')}.\\par")
             if meta.get("label"):
-                out.append(review_statement_tex(L, meta["label"], parsed, set()))
+                out.append("\\begin{NoHyper}" + review_statement_tex(L, meta["label"], parsed, set()) + "\\end{NoHyper}")
             d = L.decls.get(h, {})
             if with_lean and d.get("value"):
                 out.append(lean_to_tex(f"def {h} :=\n  {d['value']}"))
