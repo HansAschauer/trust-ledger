@@ -890,7 +890,7 @@ class Ledger:
             shutil.rmtree(tmp, ignore_errors=True)
         return results
 
-    def record_snapshots(self):
+    def record_snapshots(self, dry_run=False):
         """Snapshots for every claim and hypothesis that has a current attestation but no snapshot yet (attestations made
         before snapshots existed, or by hand). Returns the names recorded."""
         done = []
@@ -900,7 +900,8 @@ class Ledger:
                 if cur and not self.snapshot_path(cur).exists():
                     st = self.attestation_state(n) if kind == "claim" else self.hypothesis_state(n)
                     if any(ok for *_, ok in st):
-                        self.write_snapshot({kind: n, "bound": cur})
+                        if not dry_run:
+                            self.write_snapshot({kind: n, "bound": cur})
                         done.append(n)
         return done
 
@@ -2754,8 +2755,8 @@ def cmd_assess(L, args):
 def cmd_snapshot(L, args):
     """Record snapshots for current attestations that have none (so that `diff` can later show what changed); with
     --from-git, also rebuild those of stale attestations from the project's history."""
-    done = L.record_snapshots()
-    print(f"recorded {len(done)} snapshot(s) of current attestations" + (": " + ", ".join(done) if done else "") +
+    done = L.record_snapshots(dry_run=args.dry_run)
+    print(f"{'would record' if args.dry_run else 'recorded'} {len(done)} snapshot(s) of current attestations" + (": " + ", ".join(done) if done else "") +
           "; the others already have one or have no current attestation")
     if args.from_git:
         res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, dry_run=args.dry_run, partial=args.partial)
@@ -3316,7 +3317,7 @@ def main(argv=None):
     p.add_argument("targets", nargs="*", metavar="CLAIM", help="with --from-git: only these claims")
     p.add_argument("--from-git", action="store_true", help="also rebuild the snapshots of stale attestations from the git history")
     p.add_argument("--depth", type=int, default=8, help="with --from-git: how many earlier commits to try (default 8)")
-    p.add_argument("--dry-run", action="store_true", help="with --from-git: say what could be recovered, write nothing")
+    p.add_argument("--dry-run", action="store_true", help="say what would be recorded or recovered, write nothing")
     p.add_argument("--partial", action="store_true", help="with --from-git: where the exact state cannot be rebuilt (evidence not in git), keep the statement text as an unverified snapshot")
     p = sub.add_parser("diff", help="what changed since the latest attestation (of a claim, or --hypothesis) that has a snapshot")
     p.add_argument("claim", nargs="?"); p.add_argument("--hypothesis")

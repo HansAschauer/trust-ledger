@@ -911,6 +911,14 @@ class GitHistory(Toy):
         self.assertTrue(any(n["id"].endswith("Toy.f") and n["change"] == "changed" for n in d["nodes"]))
         self.assertEqual(self.L().recover_snapshots(), [])                                  # nothing left to do
 
+    def test_a_dry_run_writes_nothing_at_all(self):
+        self.start()
+        self.attest("lem-succ", "--no-snapshot")
+        self.assertEqual(lg.main(["-C", str(self.p), "snapshot", "--from-git", "--dry-run"]), 0)
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())            # not even for the current attestation
+        self.assertEqual(self.L().record_snapshots(dry_run=True), ["lem-succ"])
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())
+
     def test_files_changed_since_the_commit_of_the_attestation(self):
         base = self.start()
         self.attest("lem-succ")                                                             # with snapshot and git_head
