@@ -39,6 +39,11 @@ CORE_KINDS = {"file", "source", "step", "paper-source", "claim", "citation", "as
               "hypothesis", "reading", "assessment", "environment"}
 
 
+class LedgerError(Exception):
+    """A problem the person using the ledger can fix (bad input, missing key, failed signature). The command line
+    turns it into an exit message; a program that uses ledger.py as a library catches it."""
+
+
 # ---------------------------------------------------------------- hashing (FORMAT.md section 2)
 def canon(x):
     def check(v):
@@ -136,10 +141,18 @@ def attestation_message(project, a):
 
 
 def ssh_sign(keyfile, message):
-    r = subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(keyfile), "-n", SIG_NAMESPACE],
-                       input=message, capture_output=True)
+    """Sign with `ssh-keygen -Y sign -f keyfile`. keyfile is a private key file, or a public key file (*.pub): then
+    only ssh-agent can hold the private key. A .pub file is copied to a scratch directory first, because ssh-keygen
+    would otherwise fall back to the private key file next to it (and ask for its passphrase on a terminal)."""
+    with tempfile.TemporaryDirectory() as d:
+        keyfile = Path(keyfile)
+        if keyfile.suffix == ".pub":
+            shutil.copy(keyfile, Path(d) / "agent-key.pub")
+            keyfile = Path(d) / "agent-key.pub"
+        r = subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(keyfile), "-n", SIG_NAMESPACE],
+                           input=message, capture_output=True)
     if r.returncode:
-        sys.exit("ssh-keygen -Y sign failed: " + r.stderr.decode(errors="replace").strip())
+        raise LedgerError("ssh-keygen -Y sign failed: " + r.stderr.decode(errors="replace").strip())
     return r.stdout.decode()
 
 
@@ -566,7 +579,7 @@ class Ledger:
         self.dir = self.root / "ledger"
         cfgfile = self.dir / "ledger.toml"
         if not cfgfile.exists():
-            sys.exit(f"{cfgfile} not found")
+            raise LedgerError(f"{cfgfile} not found")
         self.cfg = tomllib.loads(cfgfile.read_text())
         self.paper = paper
         self.errors, self.warnings = [], []
@@ -605,6 +618,309 @@ class Ledger:
         target = "hypothesis" if a.get("hypothesis") else "claim"
         return [x for x in a.get("checklist", []) if x not in self.checklist
                 or self.checklist[x].get("applies", "claim") not in (target, "both")]
+
+    # -- attesting (the library side of `attest`; raises LedgerError) --
+    def make_attestation(self, person, level, claim=None, hypothesis=None, reason="", checklist=(), date=None):
+        """The record of an attestation of a claim or of a hypothesis, bound to its current statement. Not yet
+        signed or written."""
+        if bool(claim) == bool(hypothesis):
+            raise LedgerError("give exactly one of CLAIM and --hypothesis NAME")
+        if level not in LEVELS:
+            raise LedgerError(f"level {level!r} is not one of {', '.join(LEVELS)}")
+        if hypothesis:
+            if hypothesis not in self.scope_hyps:
+                raise LedgerError(f"{hypothesis} is not a hypothesis of any result in this scope; known: "
+                                  f"{', '.join(self.scope_hyps) or 'none'}")
+            target, bound = dict(hypothesis=hypothesis), self.hspec[hypothesis]
+        else:
+            if claim not in self.claims:
+                raise LedgerError(f"unknown claim {claim}")
+            target, bound = dict(claim=claim), self.cspec[claim]
+        if level == "yellow" and not reason:
+            raise LedgerError("yellow needs --reason")
+        rec = dict(**target, person=person, date=date or datetime.date.today().isoformat(), level=level,
+                   reason=reason or "", checklist=list(checklist), bound=bound)
+        bad = self.checklist_problems(rec)
+        if bad:
+            raise LedgerError(f"checklist item(s) {', '.join(bad)} not defined for this target in ledger.toml; defined: "
+                              + ", ".join(f"{k} ({v.get('applies', 'claim')})" for k, v in self.checklist.items()))
+        return rec
+
+    def key_public(self, key_id, pub=None):
+        """The public key line registered under `key_id` in ledger/keys.toml (or `pub`, a standalone file's key)."""
+        pub = (self.keys.get(key_id) or {}).get("public") or pub
+        if not pub:
+            raise LedgerError(f"key {key_id!r} is not in ledger/keys.toml; register it with `addkey` or pass --pub FILE")
+        return pub
+
+    def sign_attestation(self, rec, key_id, keyfile, pub=None):
+        """Sign rec (adds `key` and `sig`) with ssh-keygen -Y sign -f keyfile and check the signature against the
+        registered public key. keyfile is a private key file, or the public key file when ssh-agent holds the private
+        key. One signing call per attestation. Returns the public key line."""
+        pub = self.key_public(key_id, pub)
+        project = self.cfg.get("project", {}).get("name", "project")
+        rec["key"] = key_id
+        rec["sig"] = ssh_sign(keyfile, attestation_message(project, rec))
+        if ssh_verify(pub, key_id, rec["sig"], attestation_message(project, rec)) is not True:
+            for k in ("key", "sig"):
+                rec.pop(k, None)
+            raise LedgerError("the signature does not verify against the registered public key: wrong --sign file for this key?")
+        return pub
+
+    def append_attestation(self, rec, out=None, extra="", snapshot=True):
+        """Append rec to ledger/attestations.toml (or `out`) as one whole record, under an exclusive lock so that
+        concurrent writers cannot interleave. Unless `out` names a standalone file or snapshot is False, also record what
+        the attestation bound to (`write_snapshot`). Returns the path written."""
+        import fcntl
+        if snapshot and not out:
+            self.write_snapshot(rec)
+        out = Path(out) if out else self.dir / "attestations.toml"
+        text = extra + toml_record("[[attestation]]", rec)
+        with open(out, "a", encoding="utf-8") as f:   # TOML is UTF-8; the length in bytes is what an undo needs
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(text)
+            f.flush()
+        return out
+
+    # -- snapshots: what an attestation bound to, kept so that `diff` can show what changed since (not hashed, not in the root) --
+    def snapshot_path(self, bound):
+        return self.dir / "snapshots" / f"{bound}.json"
+
+    def _spec_closure(self, ids):
+        seen, todo = set(), [i for i in ids if i in self.spec_payload]
+        while todo:
+            i = todo.pop()
+            if i not in seen:
+                seen.add(i)
+                todo += [d for d in self.spec_deps.get(i, []) if d in self.spec_payload]
+        return seen
+
+    def snapshot_of(self, claim=None, hypothesis=None):
+        """The current state of what an attestation of this claim (or hypothesis) binds to, as plain data: the statement
+        text, and every evidence node with its spec hash and spec content (for Lean declarations: type and value), down to
+        the declarations they depend on, plus the statements of the claims it uses."""
+        if bool(claim) == bool(hypothesis):
+            raise LedgerError("give exactly one of a claim and a hypothesis")
+        nodes = {}
+        if claim:
+            if claim not in self.claims:
+                raise LedgerError(f"unknown claim {claim}")
+            c, prov = self.claims[claim], self.provenance_only(claim)
+            ev = [i for i in sorted(self.deps["claim:" + claim])
+                  if self.payload.get(i, {}).get("kind") not in ("claim", "reading", "assessment") and i not in prov]
+            for i in ev:
+                nodes[i] = dict(kind=self.payload[i]["kind"], spec=self.evidence_spec(i),
+                                content=(self.spec_payload[i] if i in self.spec_payload else self.payload[i])["content"])
+            uses = {u: dict(spec=self.cspec[u], text=self.stmt[u][0]) for u in c.get("uses", []) if u in self.claims}
+            text, source, bound = self.stmt[claim][0], self.stmt[claim][1], self.cspec[claim]
+            roots = ev
+        else:
+            if hypothesis not in self.scope_hyps:
+                raise LedgerError(f"{hypothesis} is not a hypothesis of any result in this scope")
+            meta = self.hypotheses.get(hypothesis, {})
+            for x in sorted(meta.get("cites", [])):
+                if "cite:" + x in self.full:
+                    nodes["cite:" + x] = dict(kind="citation", spec=self.full["cite:" + x], content=self.payload["cite:" + x]["content"])
+            roots = [self.hyp_node[hypothesis]] if hypothesis in self.hyp_node else []
+            uses, (text, source), bound = {}, self.hstmt[hypothesis], self.hspec[hypothesis]
+        for i in self._spec_closure(roots):
+            nodes.setdefault(i, dict(kind=self.spec_payload[i]["kind"], spec=self.spec[i], content=self.spec_payload[i]["content"]))
+        return dict(version=1, kind="claim" if claim else "hypothesis", name=claim or hypothesis, bound=bound,
+                    text=text, source=source, nodes=nodes, uses=uses)
+
+    def write_snapshot(self, rec):
+        """Record the snapshot an attestation record binds to, if it is not there yet (the file is named by the bound
+        hash, so one file serves every attestation of the same state). Returns the path, or None if rec does not bind to
+        the current state (then there is nothing true to record)."""
+        t = dict(claim=rec["claim"]) if rec.get("claim") else dict(hypothesis=rec.get("hypothesis"))
+        snap = self.snapshot_of(**t)
+        if snap["bound"] != rec.get("bound"):
+            return None
+        p = self.snapshot_path(snap["bound"])
+        if not p.exists():
+            p.parent.mkdir(exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")      # a unique name: writers may run in parallel
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(snap, ensure_ascii=False, sort_keys=True))
+            os.replace(tmp, p)                                          # atomic; the content is the same for every writer
+        return p
+
+    def record_snapshots(self):
+        """Snapshots for every claim and hypothesis that has a current attestation but no snapshot yet (attestations made
+        before snapshots existed, or by hand). Returns the names recorded."""
+        done = []
+        for kind, names in (("claim", sorted(self.claims)), ("hypothesis", list(self.scope_hyps))):
+            for n in names:
+                cur = (self.cspec if kind == "claim" else self.hspec).get(n)
+                if cur and not self.snapshot_path(cur).exists():
+                    st = self.attestation_state(n) if kind == "claim" else self.hypothesis_state(n)
+                    if any(ok for *_, ok in st):
+                        self.write_snapshot({kind: n, "bound": cur})
+                        done.append(n)
+        return done
+
+    def diff_since(self, claim=None, hypothesis=None):
+        """What changed since the latest attestation that has a snapshot, as plain data. `available` is False when no
+        attestation of this target has a snapshot (it was made before snapshots were recorded)."""
+        kind, name = ("claim", claim) if claim else ("hypothesis", hypothesis)
+        if name not in (self.claims if claim else self.scope_hyps):
+            raise LedgerError(f"unknown {kind} {name}")
+        recs = [a for a in self.attestations if a.get(kind) == name and a.get("_sig") not in ("invalid", "revoked")]
+        if not recs:
+            return dict(available=False, reason="this has no attestation")
+        cur = self.snapshot_of(**{kind: name})
+        ref = next((a for a in reversed(recs) if self.snapshot_path(a.get("bound", "")).exists()), None)
+        if ref is None:
+            a = recs[-1]
+            return dict(available=False, current=a.get("bound") == cur["bound"], reason=
+                        "no snapshot was recorded for any attestation of this; it cannot be compared (the snapshot is "
+                        "written when an attestation is made, or by `ledger.py snapshot` while one is current)",
+                        attestation=dict(person=a.get("person"), level=a.get("level"), date=a.get("date"), bound=a.get("bound")))
+        att = dict(person=ref.get("person"), level=ref.get("level"), date=ref.get("date"), bound=ref["bound"])
+        if ref["bound"] == cur["bound"]:
+            return dict(available=True, current=True, attestation=att, text=dict(old=cur["text"], new=cur["text"], changed=False),
+                        nodes=[], uses=[])
+        old = json.loads(self.snapshot_path(ref["bound"]).read_text(encoding="utf-8"))
+        nodes = []
+        for i in sorted(set(old["nodes"]) | set(cur["nodes"])):
+            o, n = old["nodes"].get(i), cur["nodes"].get(i)
+            if o and n and o["spec"] == n["spec"]:
+                continue
+            nodes.append(dict(id=i, kind=(n or o)["kind"], change="added" if not o else "removed" if not n else "changed",
+                              old=o and o["content"], new=n and n["content"],
+                              content_same=bool(o and n and o["content"] == n["content"])))
+        uses = []
+        for u in sorted(set(old["uses"]) | set(cur["uses"])):
+            o, n = old["uses"].get(u), cur["uses"].get(u)
+            if o and n and o["spec"] == n["spec"]:
+                continue
+            uses.append(dict(name=u, change="added" if not o else "removed" if not n else "changed",
+                             old_text=o and o["text"], new_text=n and n["text"]))
+        return dict(available=True, current=False, attestation=att,
+                    text=dict(old=old["text"], new=cur["text"], changed=old["text"] != cur["text"]), nodes=nodes, uses=uses)
+
+    # -- one claim in detail (what `why` prints; the web UI shows it next to the paper text and the Lean text) --
+    def _dep_closure(self, start, skip=()):
+        seen, todo = set(), list(start)
+        while todo:
+            i = todo.pop()
+            if i in seen or i == self.env or i in skip:
+                continue
+            seen.add(i)
+            todo += self.deps.get(i, [])
+        return seen
+
+    def why_data(self, n):
+        """What claim n says and rests on, as plain data (`why` prints it)."""
+        if n not in self.claims:
+            raise LedgerError(f"unknown claim {n}")
+        c = self.claims[n]
+        prov = self.provenance_only(n)
+        rests = self._dep_closure([i for i in self.deps["claim:" + n] if i not in prov])
+        recorded = self._dep_closure(prov, skip=rests)
+        label = lambda ids: [dict(provenance=self.payload[i]["provenance"], id=i) for i in sorted(ids)]
+        return dict(name=n, statement=self.stmt[n][0], source=self.stmt[n][1], evidence=self.ev(c),
+                    tools={name: self.adapter_status(name, n) for name in self.adapters if c.get(name)},
+                    spec=self.cspec[n], rests_on=label(rests), recorded=label(recorded),
+                    register=list(self.register[n]), step_of={m: list(ds) for m, ds in self.used_in(n).items()},
+                    shares_label={lab: [x for x in ns if x != n] for lab, ns in self.split_labels().items() if n in ns},
+                    attestations=[dict(person=p, level=lvl, date=date, current=cur)
+                                  for p, lvl, date, cur in self.attestation_state(n)])
+
+    def claim_detail(self, n):
+        """why_data plus the texts a reviewer reads: the back-translation and the Lean statement extract named by
+        the [review] templates (None where there is no template or no file), and the claims that use n."""
+        d = self.why_data(n)
+        c = self.claims[n]
+
+        def read(key):
+            try:
+                f = self.review_file(key, n)
+            except (KeyError, IndexError):
+                f = None
+            return (f.read_text(), str(f.relative_to(self.root))) if f and f.is_file() else (None, None)
+        d["reading"], d["reading_file"] = read("readings")
+        d["extract"], d["extract_file"] = read("extracts")
+        d["uses"] = list(c.get("uses", []))
+        d["used_by"] = sorted(m for m, x in self.claims.items() if n in x.get("uses", []))
+        d["labels"] = c.get("labels") or ([c["label"]] if c.get("label") else [])
+        d["paper"] = c.get("paper")
+        d["bound"] = self.cspec[n]
+        d["hypotheses"] = self.claim_hypotheses(n)
+        return d
+
+    def hypothesis_detail(self, h):
+        """One hypothesis for a reader: its statement (from the paper by label, else the hand-written text), the citations
+        it rests on with their fields (source URL and so on), what is attested, and the claims that are proved given it."""
+        if h not in self.scope_hyps:
+            raise LedgerError(f"{h} is not a hypothesis of any result in this scope; known: {', '.join(self.scope_hyps) or 'none'}")
+        meta = self.hypotheses.get(h, {})
+        text, source = self.hypothesis_statement(h, meta)
+        cites = [dict(key=c, defined=c in self.citations, **{k: v for k, v in (self.citations.get(c) or {}).items() if k != "key"})
+                 for c in meta.get("cites", [])]
+        return dict(name=h, label=meta.get("label"), paper=meta.get("paper"), statement=text, source=source, cites=cites,
+                    bound=self.hspec[h], known_theorem=self.known_theorem(h),
+                    checklist={k: v.get("text", "") for k, v in self.checklist.items()
+                               if v.get("applies", "claim") in ("hypothesis", "both")},
+                    attestations=[dict(person=p, level=lvl, date=date, current=cur,
+                                       signature=self.signature_of(h, p, "hypothesis"))
+                                  for p, lvl, date, cur in self.hypothesis_state(h)],
+                    used_by=sorted(n for n in self.claims if h in self.claim_hypotheses(n)))
+
+    # -- structured status (what `status` prints; `status --json` prints it as JSON) --
+    def status_data(self):
+        """Everything `status` reports, as plain data: claims, hypotheses, root, messages (warnings and errors in
+        the order `status` prints them) and the number of stale attestations."""
+        tools = self.tools_in_scope()
+        claims, stale = [], 0
+        for n in sorted(self.claims):
+            c = self.claims[n]
+            att = [dict(person=p, level=lvl, date=date, current=cur, signature=self.signature_of(n, p))
+                   for p, lvl, date, cur in self.attestation_state(n)]
+            stale += sum(not a["current"] for a in att)
+            ts = {}
+            for t in tools:
+                status, word = self.adapter_state(t, n)
+                hs = self.claim_hypotheses(n)
+                known = [sum(self.known_theorem(h) for h in hs), len(hs)] if status == "conditional" and hs else None
+                ts[t] = dict(status=status, word=word, known_theorems=known)
+            claims.append(dict(name=n, evidence=self.ev(c), statement=self.stmt[n][1], tools=ts,
+                               attestations=att, register=len(self.register[n]), bound=self.cspec.get(n),
+                               labels=c.get("labels") or ([c["label"]] if c.get("label") else []),
+                               paper=c.get("paper"), uses=list(c.get("uses", [])),
+                               hypotheses=self.claim_hypotheses(n)))
+        hyps = []
+        for h in self.scope_hyps:
+            meta = self.hypotheses.get(h, {})
+            st = self.hypothesis_state(h)
+            stale += any(not cur for *_, cur in st)
+            hyps.append(dict(name=h, label=meta.get("label"), cites=list(meta.get("cites", [])), bound=self.hspec.get(h),
+                             known_theorem=self.known_theorem(h),
+                             attestations=[dict(person=p, level=lvl, date=date, current=cur,
+                                                signature=self.signature_of(h, p, "hypothesis"))
+                                           for p, lvl, date, cur in st]))
+        notes, messages = [], []
+        if self.paper and self.cfg.get("generated", {}).get("dirs"):
+            rf = self.root / self.cfg["generated"]["dirs"][0] / f"ledger-{self.paper}-root.tex"
+            if rf.exists():
+                m = re.search(r"\\def\\LedgerRoot\{([0-9a-f]+)\}", rf.read_text())
+                if not m or m.group(1) != self.root_hash:
+                    notes.append(f"note: {rf.name} shows an older root: run `ledger.py -P {self.paper} tex` before building the paper")
+        for lab, ns in self.split_labels().items():
+            messages.append(f"warning: {lab} is carried by {len(ns)} claims ({', '.join(ns)}); state the whole result as one Lean "
+                            "theorem and keep the label on that claim only")
+        unc = self.uncovered()
+        if unc:
+            messages.append(f"warning: {len(unc)} labelled results are not in the ledger: {', '.join(unc[:12])}"
+                            + (" ..." if len(unc) > 12 else ""))
+        for name, u in self.unresolved.items():
+            if u:
+                messages.append(f"warning: paper {name}: could not resolve {', '.join(u)}")
+        messages += ["warning: " + w for w in self.warnings]
+        messages += ["error: " + e for e in self.errors]
+        return dict(ledger_tool=__version__, format=FORMAT_VERSION, paper=self.paper, root=self.root_hash, tools=tools,
+                    claims=claims, hypotheses=hyps, stale=stale, notes=notes, messages=messages,
+                    ok=not self.errors, uncovered=unc)
 
     def load_human(self):
         self.load_vocabularies()
@@ -1277,95 +1593,60 @@ class Ledger:
 
 # ---------------------------------------------------------------- commands
 def cmd_status(L, args):
+    d = L.status_data()
+    if getattr(args, "json", False):
+        print(json.dumps(d, indent=2, ensure_ascii=False))
+        return 1 if not d["ok"] or (args.strict and d["stale"]) else 0
     word = {"green": "GREEN", "yellow": "YELLOW", "conjecture": "CONJECTURE"}
-    tools = L.tools_in_scope()
+    tools = d["tools"]
     rows = [("claim", "evid", "stmt", *tools, "attestation", "register")]
-    stale = 0
-    for n in sorted(L.claims):
-        att = []
-        for p, lvl, date, cur in L.attestation_state(n):
-            att.append(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}")
-            stale += not cur
+    for c in d["claims"]:
+        att = [f"{word.get(a['level'], a['level'])} {a['person']} {'current' if a['current'] else 'STALE'}"
+               for a in c["attestations"]]
         cells = []
         for t in tools:
-            status, w = L.adapter_state(t, n)
-            hs = L.claim_hypotheses(n)
-            if status == "conditional" and hs:
-                k = sum(L.known_theorem(h) for h in hs)
-                w += f" ({k}/{len(hs)} known thm.)" if k else ""
+            w, k = c["tools"][t]["word"], c["tools"][t]["known_theorems"]
+            if c["tools"][t]["status"] == "conditional" and k and k[0]:
+                w += f" ({k[0]}/{k[1]} known thm.)"
             cells.append(w)
-        rows.append((n, L.ev(L.claims[n]), L.stmt[n][1], *cells, "; ".join(att) or "none", str(len(L.register[n]))))
+        rows.append((c["name"], c["evidence"], c["statement"], *cells, "; ".join(att) or "none", str(c["register"])))
     w = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)).rstrip())
-    if L.scope_hyps:
+    if d["hypotheses"]:
         print("\nhypotheses (results are proved given these):")
-        for h in L.scope_hyps:
-            st = L.hypothesis_state(h)
-            att = "; ".join(f"{word.get(lvl, lvl)} {p} {'current' if cur else 'STALE'}" for p, lvl, _, cur in st) or "not attested"
-            meta = L.hypotheses.get(h, {})
-            print(f"  {h}  [{meta.get('label') or 'no label'}; cites {', '.join(meta.get('cites', [])) or 'nothing'}]  {att}")
-            stale += any(not cur for *_, cur in st)
-    print(f"\nroot {L.root_hash}" + (f"  (paper {L.paper})" if L.paper else ""))
-    if L.paper and L.cfg.get("generated", {}).get("dirs"):
-        rf = L.root / L.cfg["generated"]["dirs"][0] / f"ledger-{L.paper}-root.tex"
-        if rf.exists():
-            m = re.search(r"\\def\\LedgerRoot\{([0-9a-f]+)\}", rf.read_text())
-            if not m or m.group(1) != L.root_hash:
-                print(f"note: {rf.name} shows an older root: run `ledger.py -P {L.paper} tex` before building the paper",
-                      file=sys.stderr)
-    for lab, ns in L.split_labels().items():
-        print(f"warning: {lab} is carried by {len(ns)} claims ({', '.join(ns)}); state the whole result as one Lean "
-              "theorem and keep the label on that claim only", file=sys.stderr)
-    unc = L.uncovered()
-    if unc:
-        print(f"warning: {len(unc)} labelled results are not in the ledger: {', '.join(unc[:12])}" + (" ..." if len(unc) > 12 else ""),
-              file=sys.stderr)
-    for name, u in L.unresolved.items():
-        if u:
-            print(f"warning: paper {name}: could not resolve {', '.join(u)}", file=sys.stderr)
-    for w in L.warnings:
-        print("warning:", w, file=sys.stderr)
-    for e in L.errors:
-        print("error:", e, file=sys.stderr)
-    return 1 if L.errors or (args.strict and stale) else 0
+        for h in d["hypotheses"]:
+            att = "; ".join(f"{word.get(a['level'], a['level'])} {a['person']} {'current' if a['current'] else 'STALE'}"
+                            for a in h["attestations"]) or "not attested"
+            print(f"  {h['name']}  [{h['label'] or 'no label'}; cites {', '.join(h['cites']) or 'nothing'}]  {att}")
+    print(f"\nroot {d['root']}" + (f"  (paper {d['paper']})" if d["paper"] else ""))
+    for line in d["notes"] + d["messages"]:
+        print(line, file=sys.stderr)
+    return 1 if not d["ok"] or (args.strict and d["stale"]) else 0
 
 
 def cmd_why(L, args):
     n = args.claim
     if n not in L.claims:
-        sys.exit(f"unknown claim {n}")
-    c = L.claims[n]
-    tools = "".join(f", {name} {L.adapter_status(name, n)}" for name in L.adapters if c.get(name))
-    print(f"{n} [{L.stmt[n][1]}]: {L.stmt[n][0]}\n  evidence {L.ev(c)}{tools}, spec {L.cspec[n][:12]}")
-    prov = L.provenance_only(n)
-
-    def closure(start, skip=()):
-        seen, todo = set(), list(start)
-        while todo:
-            i = todo.pop()
-            if i in seen or i == L.env or i in skip:
-                continue
-            seen.add(i)
-            todo += L.deps.get(i, [])
-        return seen
-    rests = closure([i for i in L.deps["claim:" + n] if i not in prov])
+        raise LedgerError(f"unknown claim {n}")
+    w = L.why_data(n)
+    tools = "".join(f", {name} {word}" for name, word in w["tools"].items())
+    print(f"{n} [{w['source']}]: {w['statement']}\n  evidence {w['evidence']}{tools}, spec {w['spec'][:12]}")
     print("  rests on:")
-    for i in sorted(rests):
-        print(f"    {L.payload[i]['provenance']:9} {i}")
-    recorded = closure(prov, skip=rests)
-    if recorded:
+    for r in w["rests_on"]:
+        print(f"    {r['provenance']:9} {r['id']}")
+    if w["recorded"]:
         print("  provenance (recorded in the root, not part of what an attestation binds to):")
-        for i in sorted(recorded):
-            print(f"    {L.payload[i]['provenance']:9} {i}")
-    print("  register:", ", ".join(L.register[n]) or "(empty)")
-    for m, ds in sorted(L.used_in(n).items()):
+        for r in w["recorded"]:
+            print(f"    {r['provenance']:9} {r['id']}")
+    print("  register:", ", ".join(w["register"]) or "(empty)")
+    for m, ds in sorted(w["step_of"].items()):
         print(f"  step of {m}: its proofs use {', '.join(ds)}")
-    for lab, ns in L.split_labels().items():
-        if n in ns:
-            print(f"  shares the label {lab} with {', '.join(x for x in ns if x != n)}")
-    for p, lvl, date, cur in L.attestation_state(n):
-        print(f"  attested {lvl} by {p} on {date}: {'current' if cur else 'STALE (its statement or the evidence it binds to changed since)'}")
+    for lab, others in w["shares_label"].items():
+        print(f"  shares the label {lab} with {', '.join(others)}")
+    for a in w["attestations"]:
+        print(f"  attested {a['level']} by {a['person']} on {a['date']}: "
+              f"{'current' if a['current'] else 'STALE (its statement or the evidence it binds to changed since)'}")
     return 0
 
 
@@ -2168,44 +2449,54 @@ def toml_record(table, rec):
 
 
 def cmd_attest(L, args):
-    if bool(args.claim) == bool(args.hypothesis):
-        sys.exit("give exactly one of CLAIM and --hypothesis NAME")
-    if args.hypothesis:
-        if args.hypothesis not in L.scope_hyps:
-            sys.exit(f"{args.hypothesis} is not a hypothesis of any result in this scope; known: {', '.join(L.scope_hyps) or 'none'}")
-        target, bound = dict(hypothesis=args.hypothesis), L.hspec[args.hypothesis]
-    else:
-        if args.claim not in L.claims:
-            sys.exit(f"unknown claim {args.claim}")
-        target, bound = dict(claim=args.claim), L.cspec[args.claim]
-    if args.level == "yellow" and not args.reason:
-        sys.exit("yellow needs --reason")
-    rec = dict(**target, person=args.person, date=datetime.date.today().isoformat(), level=args.level,
-               reason=args.reason or "", checklist=[x for x in (args.checklist or "").split(",") if x],
-               bound=bound)
-    bad = L.checklist_problems(rec)
-    if bad:
-        sys.exit(f"checklist item(s) {', '.join(bad)} not defined for this target in ledger.toml; defined: "
-                 + ", ".join(f"{k} ({v.get('applies', 'claim')})" for k, v in L.checklist.items()))
+    rec = L.make_attestation(args.person, args.level, claim=args.claim, hypothesis=args.hypothesis, reason=args.reason,
+                             checklist=[x for x in (args.checklist or "").split(",") if x])
     extra = ""
     if args.sign:
         if not args.key:
-            sys.exit("--sign needs --key KEYID (a key registered with `addkey`, or --pub for a standalone file)")
-        pub = (L.keys.get(args.key) or {}).get("public") or (Path(args.pub).read_text().strip() if args.pub else None)
-        if not pub:
-            sys.exit(f"key {args.key!r} is not in ledger/keys.toml; register it with `addkey` or pass --pub FILE")
-        project = L.cfg.get("project", {}).get("name", "project")
-        rec["key"] = args.key
-        rec["sig"] = ssh_sign(args.sign, attestation_message(project, rec))
-        if ssh_verify(pub, args.key, rec["sig"], attestation_message(project, rec)) is not True:
-            sys.exit("the signature does not verify against the registered public key: wrong --sign file for this key?")
+            raise LedgerError("--sign needs --key KEYID (a key registered with `addkey`, or --pub for a standalone file)")
+        pub = L.sign_attestation(rec, args.key, args.sign, pub=Path(args.pub).read_text().strip() if args.pub else None)
         if args.out:  # a standalone file carries the key it was made with
             extra = toml_record(f"[key.{args.key}]", dict(person=args.person, public=pub, source="attestation-file"))
-    out = Path(args.out) if args.out else L.dir / "attestations.toml"
-    with open(out, "a") as f:
-        f.write(extra + toml_record("[[attestation]]", rec))
+    out = L.append_attestation(rec, args.out, extra, snapshot=not args.no_snapshot)
     print(f"recorded {args.level} by {args.person} on {args.claim or 'hypothesis ' + args.hypothesis}, bound to {rec['bound'][:12]}"
           + (", signed" if "sig" in rec else "") + (f" -> {out}" if args.out else ""))
+    return 0
+
+
+def cmd_snapshot(L, args):
+    """Record snapshots for current attestations that have none (so that `diff` can later show what changed)."""
+    done = L.record_snapshots()
+    print(f"recorded {len(done)} snapshot(s)" + (": " + ", ".join(done) if done else "") +
+          f"; the others already have one or have no current attestation")
+    return 0
+
+
+def cmd_diff(L, args):
+    """What changed since the latest attestation of a claim (or hypothesis) that has a snapshot."""
+    import difflib
+    if bool(args.claim) == bool(args.hypothesis):
+        raise LedgerError("give exactly one of CLAIM and --hypothesis NAME")
+    d = L.diff_since(claim=args.claim, hypothesis=args.hypothesis)
+    name = args.claim or "hypothesis " + args.hypothesis
+    if not d["available"]:
+        print(f"{name}: {d['reason']}")
+        return 0
+    a = d["attestation"]
+    print(f"{name}: compared with the attestation {a['level']} by {a['person']} on {a['date']} (bound to {a['bound'][:12]})")
+    if d["current"]:
+        print("  nothing changed: that attestation is current")
+        return 0
+    t = d["text"]
+    print("  statement: " + ("changed" if t["changed"] else "unchanged"))
+    if t["changed"]:
+        for line in difflib.unified_diff(t["old"].splitlines(), t["new"].splitlines(), "attested", "now", lineterm="", n=1):
+            print("    " + line)
+    for u in d["uses"]:
+        print(f"  uses {u['name']}: {u['change']}")
+    for n in d["nodes"]:
+        how = "a dependency of it changed" if n["content_same"] else "its statement-level content changed"
+        print(f"  {n['kind']:10} {n['id']}: {n['change']}" + (f" ({how})" if n["change"] == "changed" else ""))
     return 0
 
 
@@ -2413,6 +2704,7 @@ def main(argv=None):
     ap.add_argument("-P", "--paper", default=None, help="restrict to the claims of one configured paper (own root and lock file)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("status"); p.add_argument("--strict", action="store_true")
+    p.add_argument("--json", action="store_true", help="print the status as JSON (claims, hypotheses, messages) instead of the table")
     sub.add_parser("lock"); sub.add_parser("verify"); sub.add_parser("extract"); sub.add_parser("tex")
     p = sub.add_parser("review", help="build a review packet: paper statements next to back-translations and Lean text")
     p.add_argument("--claims", help="comma-separated claim names (default: all in scope)")
@@ -2430,7 +2722,11 @@ def main(argv=None):
     p.add_argument("--sign", metavar="PRIVATE_KEY", help="sign with this ssh key file (ssh-keygen -Y sign)")
     p.add_argument("--key", help="id of the signing key in ledger/keys.toml")
     p.add_argument("--pub", help="public key file (standalone attestations by someone who is not in keys.toml)")
+    p.add_argument("--no-snapshot", action="store_true", help="do not record what the attestation binds to (ledger/snapshots/)")
     p.add_argument("--out", help="write a standalone attestation file instead of appending to ledger/attestations.toml")
+    sub.add_parser("snapshot", help="record what current attestations bind to, so that `diff` can show later changes")
+    p = sub.add_parser("diff", help="what changed since the latest attestation (of a claim, or --hypothesis) that has a snapshot")
+    p.add_argument("claim", nargs="?"); p.add_argument("--hypothesis")
     p = sub.add_parser("addkey"); p.add_argument("id"); p.add_argument("--person", required=True)
     p.add_argument("--pub", required=True, help="public key file or line")
     p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
@@ -2444,6 +2740,13 @@ def main(argv=None):
     p = sub.add_parser("migrate", help="rebind attestations after a format change, from the old lock file")
     p.add_argument("--old-lock", required=True, help="lock file written by the previous format, current when converting")
     args = ap.parse_args(argv)
+    try:
+        return run(args)
+    except LedgerError as e:
+        sys.exit(str(e))
+
+
+def run(args):
     if args.cmd == "commitment":
         return cmd_commitment(None, args)
     if args.cmd in ("extract", "verify-attestation", "addkey"):  # no ledger build needed (the dump may not exist yet)

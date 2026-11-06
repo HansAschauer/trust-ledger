@@ -1,4 +1,4 @@
-import json, os, re, shutil, subprocess, sys, tempfile, unittest
+import json, os, re, shutil, subprocess, sys, tempfile, threading, time, tomllib, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -607,6 +607,167 @@ Query not attacker(s_enc[]) is true.
 
 --------------------------------------------------------------
 """
+
+
+class LibraryApi(Toy):
+    """ledger.py as a library (used by trust-ledger-ui): status_data / status --json, and make, sign and append an
+    attestation without going through the command line."""
+
+    def keygen(self, name):
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", name, "-f", str(self.tmp / name), "-q"], check=True)
+        return self.tmp / name
+
+    def register(self, name="alice"):
+        k = self.keygen(name)
+        lg.main(["-C", str(self.p), "addkey", name, "--person", "Alice", "--pub", str(k) + ".pub", "--source", "paper"])
+        return k
+
+    def test_status_data_follows_attestations(self):
+        d = self.L().status_data()
+        c = {x["name"]: x for x in d["claims"]}
+        self.assertEqual(c["lem-succ"]["attestations"], [])
+        self.assertEqual(d["stale"], 0)
+        self.attest("lem-succ")
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))
+        d = self.L().status_data()
+        a = {x["name"]: x for x in d["claims"]}["lem-succ"]["attestations"]
+        self.assertEqual([(x["person"], x["level"], x["current"], x["signature"]) for x in a],
+                         [("X", "green", False, "unsigned")])
+        self.assertEqual(d["stale"], 1)
+        json.dumps(d)  # plain data only
+
+    def test_claim_detail_has_the_why_data_and_the_reviewers_texts(self):
+        L = self.L()
+        d = L.claim_detail("thm-twice")
+        self.assertEqual(d["name"], "thm-twice")
+        self.assertEqual(d["bound"], L.cspec["thm-twice"])
+        self.assertIn("lem-succ", d["uses"])
+        self.assertIn("thm-twice", L.claim_detail("lem-succ")["used_by"])
+        self.assertIsNone(d["reading"])                       # the toy has no [review] templates
+        self.assertTrue(d["rests_on"])
+        json.dumps(d)
+        with self.assertRaises(lg.LedgerError):
+            L.why_data("no-such-claim")
+
+    def test_hypothesis_detail(self):
+        L = lg.Ledger(self.p, "toy")
+        d = L.hypothesis_detail("Toy.BanachProp")
+        self.assertEqual(d["name"], "Toy.BanachProp")
+        self.assertEqual(d["bound"], L.hspec["Toy.BanachProp"])
+        self.assertFalse(d["known_theorem"])
+        self.assertIsInstance(d["used_by"], list)
+        json.dumps(d)
+        with self.assertRaises(lg.LedgerError):
+            L.hypothesis_detail("No.Such")
+
+    def test_snapshot_is_written_at_attestation_and_diff_shows_what_changed(self):
+        self.attest("lem-succ")
+        L = self.L()
+        snap = self.p / "ledger" / "snapshots" / f"{L.cspec['lem-succ']}.json"
+        self.assertTrue(snap.exists())
+        self.assertEqual(L.diff_since(claim="lem-succ")["current"], True)
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))          # a definition it depends on changes
+        L = self.L()
+        d = L.diff_since(claim="lem-succ")
+        self.assertTrue(d["available"] and not d["current"])
+        self.assertEqual(d["attestation"]["person"], "X")
+        self.assertFalse(d["text"]["changed"])
+        self.assertTrue(any(n["id"].endswith("Toy.f") and n["change"] == "changed" and not n["content_same"] for n in d["nodes"]))
+        json.dumps(d)
+        self.assertEqual(lg.main(["-C", str(self.p), "diff", "lem-succ"]), 0)
+
+    def test_attestation_without_snapshot_cannot_be_compared_until_one_is_recorded(self):
+        L = self.L()
+        L.append_attestation(L.make_attestation("X", "green", claim="lem-succ"), snapshot=False)
+        L = self.L()
+        self.assertEqual(L.record_snapshots(), ["lem-succ"])                           # while the attestation is current
+        self.assertEqual(L.record_snapshots(), [])
+        self.assertTrue(L.diff_since(claim="lem-succ")["available"])
+        shutil.rmtree(self.p / "ledger" / "snapshots")
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))
+        d = self.L().diff_since(claim="lem-succ")
+        self.assertFalse(d["available"])
+        self.assertIn("no snapshot", d["reason"])
+        self.assertEqual(self.L().diff_since(claim="thm-twice")["reason"], "this has no attestation")
+        with self.assertRaises(lg.LedgerError):
+            self.L().diff_since(claim="no-such-claim")
+
+    def test_standalone_attestation_files_get_no_snapshot(self):
+        L = self.L()
+        L.append_attestation(L.make_attestation("X", "green", claim="lem-succ"), out=self.tmp / "me.att.toml")
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())
+
+    def test_hypothesis_snapshot_and_diff(self):
+        lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp", "--person", "X", "--level", "green"])
+        L = lg.Ledger(self.p, "toy")
+        self.assertTrue(L.snapshot_path(L.hspec["Toy.BanachProp"]).exists())
+        self.assertTrue(L.diff_since(hypothesis="Toy.BanachProp")["current"])
+
+    def test_status_json_flag(self):
+        out = subprocess.run([sys.executable, str(ROOT / "ledger.py"), "-C", str(self.p), "status", "--json"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out)["root"], self.L().root_hash)
+
+    def test_errors_are_exceptions_for_a_library_and_exits_on_the_command_line(self):
+        L = self.L()
+        with self.assertRaises(lg.LedgerError):
+            L.make_attestation("X", "green", claim="no-such-claim")
+        with self.assertRaises(lg.LedgerError):
+            L.make_attestation("X", "yellow", claim="lem-succ")           # yellow needs a reason
+        with self.assertRaises(lg.LedgerError):
+            L.make_attestation("X", "green")                              # no target
+        with self.assertRaises(lg.LedgerError):
+            L.sign_attestation(L.make_attestation("X", "green", claim="lem-succ"), "nokey", "/nonexistent")
+        with self.assertRaises(SystemExit):
+            lg.main(["-C", str(self.p), "attest", "no-such-claim", "--person", "X", "--level", "green"])
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
+    def test_wrong_key_leaves_the_record_unsigned(self):
+        self.register("alice")
+        other = self.keygen("mallory")
+        L = self.L()
+        rec = L.make_attestation("Alice", "green", claim="lem-succ")
+        with self.assertRaises(lg.LedgerError):
+            L.sign_attestation(rec, "alice", other)
+        self.assertNotIn("sig", rec); self.assertNotIn("key", rec)
+
+    @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh-agent") and shutil.which("ssh-add"),
+                         "needs ssh-keygen, ssh-agent and ssh-add")
+    def test_signing_through_ssh_agent_with_the_public_key_file(self):
+        k = self.register("alice")
+        sock = self.tmp / "agent.sock"
+        agent = subprocess.Popen(["ssh-agent", "-D", "-a", str(sock)], stdout=subprocess.DEVNULL)
+        old = os.environ.get("SSH_AUTH_SOCK")
+        try:
+            for _ in range(50):
+                if sock.exists():
+                    break
+                time.sleep(0.1)
+            os.environ["SSH_AUTH_SOCK"] = str(sock)
+            L = self.L()
+            rec = L.make_attestation("Alice", "green", claim="lem-succ")
+            with self.assertRaises(lg.LedgerError):                       # key not in the agent yet
+                L.sign_attestation(rec, "alice", str(k) + ".pub")
+            subprocess.run(["ssh-add", str(k)], check=True, capture_output=True)
+            L.sign_attestation(rec, "alice", str(k) + ".pub")             # private key is only in the agent
+            L.append_attestation(rec)
+            self.assertEqual(self.L().signature_of("lem-succ", "Alice"), "signed")
+        finally:
+            agent.terminate(); agent.wait()
+            if old is None:
+                os.environ.pop("SSH_AUTH_SOCK", None)
+            else:
+                os.environ["SSH_AUTH_SOCK"] = old
+
+    def test_concurrent_appends_stay_whole_records(self):
+        L = self.L()
+        def work(i):
+            for j in range(15):
+                L.append_attestation(L.make_attestation(f"P{i}", "yellow", claim="lem-succ", reason="r" * 300))
+        ts = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+        [t.start() for t in ts]; [t.join() for t in ts]
+        recs = tomllib.loads((self.p / "ledger" / "attestations.toml").read_text())["attestation"]
+        self.assertEqual(len(recs), 60)
 
 
 class Adapters(unittest.TestCase):

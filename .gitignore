@@ -20,3 +20,4 @@ examples/*/paper/*.out
 # ...and, as a demonstration only, the data behind its commitment (a real project never publishes these)
 !examples/egg/private/tasting.txt
 !examples/egg/private/tasting.salt
+examples/*/ledger/snapshots/
