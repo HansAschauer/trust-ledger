@@ -911,6 +911,35 @@ class GitHistory(Toy):
         self.assertTrue(any(n["id"].endswith("Toy.f") and n["change"] == "changed" for n in d["nodes"]))
         self.assertEqual(self.L().recover_snapshots(), [])                                  # nothing left to do
 
+    def legacy_assessments(self):
+        (self.p / "ledger" / "assessments.toml").write_text(
+            "\n".join(f'[assessment.{n}]\nmodel = "old"\ndate = "2026-10-08"\nverdict = "consistent"\nnotes = "x"\n' for n in ("lem-succ", "thm-twice")))
+
+    def test_audit_of_unbound_assessments_from_the_history(self):
+        self.start()
+        self.legacy_assessments()
+        self.commit("assessed")
+        rows = {r["claim"]: r for r in self.L().audit_assessments()}
+        self.assertEqual({k: v["state"] for k, v in rows.items()}, {"lem-succ": "unchanged", "thm-twice": "unchanged"})
+        self.change_paper()                                                     # only lem-succ's statement changes
+        self.commit("changed")
+        rows = {r["claim"]: r for r in self.L().audit_assessments()}
+        self.assertEqual((rows["lem-succ"]["state"], rows["lem-succ"]["changes"]), ("changed", ["paper statement"]))
+        self.assertEqual(rows["thm-twice"]["state"], "unchanged")
+        self.assertEqual(list(self.L().audit_assessments({"thm-twice"})), [r for r in self.L().audit_assessments() if r["claim"] == "thm-twice"])
+        # binding the unchanged ones only
+        self.assertEqual(lg.main(["-C", str(self.p), "assess", "--audit", "--bind-unchanged"]), 0)
+        L = self.L()
+        self.assertEqual((L.assessment_state("thm-twice")["state"], L.assessment_state("lem-succ")["state"]), ("current", "unbound"))
+        self.assertEqual(L.audit_assessments()[0]["claim"], "lem-succ")          # bound ones are no longer audited
+
+    def test_audit_needs_git_and_does_not_write(self):
+        self.legacy_assessments()
+        before = (self.p / "ledger" / "assessments.toml").read_text()
+        with self.assertRaises(lg.LedgerError):
+            self.L().audit_assessments()
+        self.assertEqual((self.p / "ledger" / "assessments.toml").read_text(), before)
+
     def test_a_dry_run_writes_nothing_at_all(self):
         self.start()
         self.attest("lem-succ", "--no-snapshot")

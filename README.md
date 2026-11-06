@@ -188,6 +188,7 @@ python3 ledger.py snapshot          # record snapshots for current attestations 
 python3 ledger.py snapshot --from-git [--partial] [--dry-run]   # rebuild the snapshots of stale attestations from the git history
 python3 ledger.py assess CLAIM --verdict consistent --model NAME --notes-file F.tex   # record an assessment with the state it judged
 python3 ledger.py assess CLAIM... --bind   # mark existing assessments as describing the present statement
+python3 ledger.py assess --audit [--bind-unchanged]   # unbound assessments: did what they compared change since, according to git?
 python3 ledger.py extract           # run the extractors of all adapters, write their dumps
 python3 ledger.py check             # run the [check.NAME] commands, record their results
 python3 ledger.py reproduce         # re-run the command steps in a scratch copy, compare their outputs
@@ -216,7 +217,11 @@ snapshot (marked as such by `diff`). Commit the dumps, or rely on the snapshots 
 **Assessments.** A model's assessment of a claim (`[assessment.NAME]`) is an aid, not an attestation, and does not enter the claim's
 hash. It can record what it judged (`spec`, `reading`); `status` then warns when it is `outdated`, and the review packet says so
 next to the verdict. Assessments without those values are `unbound`: `assess --bind` adds them, which says you know they still
-fit; for those whose claim changed, write a new one with `assess`.
+fit; for those whose claim changed, write a new one with `assess`. `assess --audit` helps to decide, if the project is in git: for
+each unbound assessment it takes the last commit that touched it and compares, at that commit and now, the paper statement, the
+claim's Lean references and `review_name`, the Lean statement extract and the back-translation, and reports `unchanged` or what
+changed. It reads the history only. `unchanged` means none of those four differs, not that the assessment is right; a definition
+changed outside the extract is not seen. `--bind-unchanged` binds those.
 
 As a library: `import ledger` gives `Ledger(root, paper)` with `status_data()` (what `status --json` prints),
 `make_attestation`, `sign_attestation` and `append_attestation` (what `attest` does, one step each; the append is

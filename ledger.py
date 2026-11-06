@@ -1057,6 +1057,72 @@ class Ledger:
             state = "outdated" if why else "current"
         return dict(verdict=a.get("verdict", ""), model=a.get("model", ""), date=a.get("date", ""), state=state, why=why)
 
+    def audit_assessments(self, targets=None):
+        """For assessments that name no state (`unbound`): did what they compared change since they were written, according to
+        git? The commit is the last one that touched the assessment's table; at that commit the project is unpacked and loaded,
+        and compared with now: the statement text from the paper, the claim's Lean references (and `review_name`), the Lean
+        statement extract and the back-translation. [{claim, date, commit, state, changes, note}], state `unchanged` (nothing
+        of those four differs: probably still describes the claim, which only a person can confirm), `changed`, or `unknown`.
+        Needs git; reads the history only. What the extract does not contain (a definition changed elsewhere) is not seen."""
+        rc, _ = git(self.root, "rev-parse", "--git-dir")
+        if rc != 0:
+            raise LedgerError("this project is not in a git repository (or git is not installed): nothing to compare with")
+        files, length = {}, {}
+        for f in sorted(self.dir.glob("*.toml")):
+            for n, (a, b) in assessment_blocks(f.read_text(encoding="utf-8")).items():
+                files[n], length[n] = f, max(1, b - a - 1)
+        rows, trees, ledgers = [], {}, {}
+        tmp = Path(tempfile.mkdtemp(prefix="ledger-audit-"))
+        rel = lambda p: p.relative_to(self.root).as_posix() if p else ""
+        read = lambda p: p.read_text(encoding="utf-8", errors="replace") if p and p.is_file() else None
+        try:
+            for n in sorted(self.assessments):
+                if n not in self.claims or (targets and n not in targets):
+                    continue
+                st = self.assessment_state(n)
+                if st["state"] != "unbound":
+                    continue
+                row = dict(claim=n, date=st["date"], commit="", state="unknown", changes=[], note="")
+                rc, out = git(self.root, "log", "-n1", "--format=%H", "-L", f"/^\\[assessment\\.{re.escape(n)}\\]/,+{length[n]}:{rel(files[n])}", "-s")
+                commit = out.split()[0] if rc == 0 and out.split() else ""
+                if not commit:
+                    row["note"] = "the history does not say when this assessment was written (not committed?)"
+                    rows.append(row)
+                    continue
+                row["commit"] = commit
+                if commit not in trees:
+                    d = tmp / commit[:12]
+                    d.mkdir(exist_ok=True)
+                    trees[commit] = d if git_extract(self.root, commit, d) and (d / "ledger" / "ledger.toml").is_file() else None
+                L2 = None
+                for scope in dict.fromkeys([self.paper, None]):          # the paper may not have been configured yet: then all
+                    if (commit, scope) not in ledgers:
+                        try:
+                            ledgers[(commit, scope)] = Ledger(trees[commit], scope) if trees[commit] else None
+                        except Exception:
+                            ledgers[(commit, scope)] = None
+                    if ledgers[(commit, scope)] is not None and n in ledgers[(commit, scope)].claims:
+                        L2 = ledgers[(commit, scope)]
+                        break
+                if L2 is None or n not in L2.claims:
+                    row["note"] = "the project at that commit cannot be loaded, or did not have this claim"
+                    rows.append(row)
+                    continue
+                c1, c2 = L2.claims[n], self.claims[n]
+                if L2.stmt[n][0] != self.stmt[n][0]:
+                    row["changes"].append("paper statement")
+                if (c1.get("lean"), c1.get("review_name")) != (c2.get("lean"), c2.get("review_name")):
+                    row["changes"].append("Lean references or review_name")
+                if read(L2.review_file("extracts", n)) != read(self.review_file("extracts", n)):
+                    row["changes"].append("Lean statement extract")
+                if read(L2.review_file("readings", n)) != read(self.review_file("readings", n)):
+                    row["changes"].append("back-translation")
+                row["state"] = "changed" if row["changes"] else "unchanged"
+                rows.append(row)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return rows
+
     # -- structured status (what `status` prints; `status --json` prints it as JSON) --
     def status_data(self):
         """Everything `status` reports, as plain data: claims, hypotheses, root, messages (warnings and errors in
@@ -2702,6 +2768,24 @@ def cmd_assess(L, args):
     for n in names:
         if n not in L.claims:
             raise LedgerError(f"unknown claim {n}")
+    if args.audit:
+        rows = L.audit_assessments(set(names) or None)
+        for r in rows:
+            print(f"{r['claim']:24} {r['state']:10} written {r['date'] or '?'}" + (f" (commit {r['commit'][:10]})" if r["commit"] else "")
+                  + (f": changed since: {', '.join(r['changes'])}" if r["changes"] else "") + (f"; {r['note']}" if r["note"] else ""))
+        n_un = sum(r["state"] == "unchanged" for r in rows)
+        print(f"\n{len(rows)} unbound assessment(s): {n_un} unchanged, {sum(r['state'] == 'changed' for r in rows)} changed, "
+              f"{sum(r['state'] == 'unknown' for r in rows)} unknown.")
+        if args.bind_unchanged and n_un:
+            todo = [r["claim"] for r in rows if r["state"] == "unchanged"]
+            print(f"binding {len(todo)} unchanged assessment(s) to the present state: {', '.join(todo)}")
+            args.claims, args.audit, args.bind = todo, False, True
+            return cmd_assess(L, args)
+        elif n_un:
+            print("`assess --audit --bind-unchanged` binds the unchanged ones (it says that you know they still fit); the changed ones need a new assessment.")
+        return 0
+    if not names:
+        raise LedgerError("give a CLAIM (or --audit)")
     where = {}
     for f in sorted(L.dir.glob("*.toml")):
         for n in assessment_blocks(f.read_text(encoding="utf-8")):
@@ -3309,7 +3393,9 @@ def main(argv=None):
     p.add_argument("--no-snapshot", action="store_true", help="do not record what the attestation binds to (ledger/snapshots/)")
     p.add_argument("--out", help="write a standalone attestation file instead of appending to ledger/attestations.toml")
     p = sub.add_parser("assess", help="record a model's assessment of a claim together with the state it judged (or --bind an existing one)")
-    p.add_argument("claims", nargs="+", metavar="CLAIM")
+    p.add_argument("claims", nargs="*", metavar="CLAIM")
+    p.add_argument("--audit", action="store_true", help="for assessments that name no state: say from git whether what they compared changed since")
+    p.add_argument("--bind-unchanged", action="store_true", help="with --audit: bind those where nothing changed (you assert that they still fit)")
     p.add_argument("--verdict", choices=ASSESSMENT_VERDICTS); p.add_argument("--model"); p.add_argument("--date")
     p.add_argument("--notes-file", help="the assessment's text, a LaTeX fragment"); p.add_argument("--notes")
     p.add_argument("--bind", action="store_true", help="mark existing assessments as describing the present state of their claims")
