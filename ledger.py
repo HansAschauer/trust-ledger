@@ -1041,6 +1041,10 @@ class Ledger:
     def hypothesis_statement(self, name, meta):
         """(text, source) of a hypothesis: from the paper by its label if given, else the hand-written text."""
         lab = meta.get("label")
+        # The paper that states the lemma is not in this scope (`-P other`): the hand-written `text`, if the entry
+        # has one, stands in for it. Without that fallback the label is searched in the papers of the scope.
+        if lab and meta.get("paper") and meta["paper"] not in self.parsed and meta.get("text"):
+            return meta["text"], "manual"
         sources = self.parsed.get(meta.get("paper")) if meta.get("paper") in self.parsed else \
             [x for v in self.parsed.values() for x in v]
         if lab and sources:

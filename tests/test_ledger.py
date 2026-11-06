@@ -247,6 +247,16 @@ class Latex(Toy):
         self.assertEqual(L.hypothesis_state("Toy.BanachProp"), [])         # honest default: not attested
         self.assertFalse(L.known_theorem("Toy.BanachProp"))
 
+    def test_hypothesis_of_another_paper_falls_back_to_its_text(self):
+        L = self.L()
+        meta = dict(label="lem:banach", paper="elsewhere", cites=[])
+        L.errors.clear()
+        self.assertEqual(L.hypothesis_statement("H", dict(meta, text="By Banach.")), ("By Banach.", "manual"))
+        self.assertEqual(L.errors, [])
+        L.hypothesis_statement("H", meta)                                   # no text: the label is searched in scope
+        self.assertEqual(len(L.errors), 0)                                  # found, as before (toy has lem:banach)
+        self.assertEqual(L.hypothesis_statement("H", dict(meta, paper="toy", text="x"))[1], "tex")  # own paper in scope
+
     def test_known_theorem_attestation(self):
         self.assertEqual(lg.main(["-C", str(self.p), "-P", "toy", "attest", "--hypothesis", "Toy.BanachProp",
                                   "--person", "X", "--level", "green", "--checklist", "H1,H2,H3"]), 0)

@@ -221,6 +221,9 @@ depends on its citations and on the adapter node with reference `<Name>` if ther
 
 * `[hypothesis."<Name>"]`: `label` (the label in the paper of the lemma that states it informally; its text is taken
   from the paper like a claim's statement), `paper`, `cites` (citation names), optional `note` or `text`.
+  If `paper` is not part of the selected scope (`-P`) and the entry has a `text`, that text is the statement
+  there (source `manual`) instead of the label's; so a lemma stated in one paper can be a hand-written, cited
+  hypothesis in the others. The spec hash differs between the two readings, so each needs its own attestation.
   Without an entry the hypothesis is still listed, with no label and no sources.
 * Its spec hash is `H("hyp-spec", {text, stated: spec(that adapter node) or "", cites: [[c, full(c)]]})`.
 * An attestation with `hypothesis = "<Name>"` instead of `claim` is bound to it. A *current green* attestation says:
