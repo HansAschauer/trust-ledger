@@ -770,6 +770,115 @@ class LibraryApi(Toy):
         self.assertEqual(len(recs), 60)
 
 
+class Init(unittest.TestCase):
+    """`ledger.py init`: a new ledger from a paper's labels."""
+    PAPER = (r"\documentclass{article}\usepackage{amsthm}\newtheorem{theorem}{Theorem}\newtheorem{lemma}[theorem]{Lemma}" "\n"
+             r"\begin{document}\begin{lemma}\label{lem:small} For all $n$. \end{lemma}" "\n"
+             r"\begin{theorem}\label{thm:main} Then $f(n)>n$. \end{theorem}\input{extra}\end{document}" "\n")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "paper").mkdir()
+        (self.tmp / "paper" / "main.tex").write_text(self.PAPER)
+        (self.tmp / "paper" / "extra.tex").write_text(r"\begin{lemma}\label{lem:extra} More. \end{lemma}" "\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def init(self, *args):
+        return lg.main(["-C", str(self.tmp), "init", *args])
+
+    def pname(self):
+        return next(iter(lg.Ledger(self.tmp).cfg["paper"]))
+
+    def test_finds_the_paper_and_makes_a_claim_per_labelled_result(self):
+        self.assertEqual(self.init("--yes"), 0)
+        L = lg.Ledger(self.tmp, self.pname())
+        self.assertEqual(L.errors, [])
+        self.assertEqual(sorted(L.claims), ["extra", "main", "small"])
+        self.assertEqual(L.uncovered(), [])
+        self.assertEqual([c["label"] for c in L.claims.values()], ["lem:small", "thm:main", "lem:extra"])   # document order
+        self.assertTrue(all(L.stmt[n][1] == "tex" for n in L.claims))
+        self.assertIn("checklist", L.cfg)
+        self.assertEqual(lg.main(["-C", str(self.tmp), "-P", self.pname(), "lock"]), 0)
+        self.assertEqual(lg.main(["-C", str(self.tmp), "-P", self.pname(), "verify"]), 0)
+
+    def test_never_overwrites_and_dry_run_writes_nothing(self):
+        self.assertEqual(self.init("--dry-run"), 0)
+        self.assertFalse((self.tmp / "ledger").exists())
+        self.assertEqual(self.init("--yes"), 0)
+        before = (self.tmp / "ledger" / "ledger.toml").read_text()
+        with self.assertRaises(SystemExit) as e:
+            self.init("--yes")
+        self.assertIn("never overwrites", str(e.exception))
+        self.assertEqual((self.tmp / "ledger" / "ledger.toml").read_text(), before)
+
+    def test_several_candidate_papers_must_be_named(self):
+        (self.tmp / "notes").mkdir()
+        (self.tmp / "notes" / "scratch.tex").write_text(r"\documentclass{article}\begin{document}x\end{document}")
+        with self.assertRaises(SystemExit) as e:
+            self.init("--yes")
+        self.assertIn("--paper NAME=path", str(e.exception))
+        self.assertFalse((self.tmp / "ledger").exists())
+        self.assertEqual(self.init("--yes", "--paper", "demo=paper/main.tex"), 0)
+        self.assertEqual(list(lg.Ledger(self.tmp).cfg["paper"]), ["demo"])
+
+    def test_default_key_ids(self):
+        for person, kid in (("A. Cook", "cook"), ("Hans Aschauer", "hans"), ("I. Pty", "pty"), ("X", "me")):
+            shutil.rmtree(self.tmp / "ledger", ignore_errors=True)
+            (self.tmp / "k.pub").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK1Dbkn52AobPqYNaEoAaulJVDyXXetblSMZsM7meK/O k\n")
+            self.assertEqual(self.init("--yes", "--key", str(self.tmp / "k.pub"), "--person", person), 0)
+            self.assertEqual(list(lg.Ledger(self.tmp).keys), [kid], person)
+
+    def test_paper_names_are_not_generic(self):
+        self.assertEqual(lg.guess_paper_name("paper/main.tex", "myproj", set()), "myproj")
+        self.assertEqual(lg.guess_paper_name("paper/nuclear/main.tex", "myproj", set()), "nuclear")
+        self.assertEqual(lg.guess_paper_name("boiling.tex", "myproj", set()), "boiling")
+        self.assertEqual(lg.guess_paper_name("paper/main.tex", "myproj", {"myproj"}), "myproj2")
+
+    def test_options_no_claims_no_checklist_and_names(self):
+        (self.tmp / "paper" / "extra.tex").write_text(
+            r"\begin{lemma}\label{lem:small2} A. \end{lemma}\begin{lemma}\label{thm:small2} B. \end{lemma}" "\n")
+        self.assertEqual(self.init("--yes", "--no-checklist", "--name", "my proj"), 0)
+        L = lg.Ledger(self.tmp, self.pname())
+        self.assertNotIn("checklist", L.cfg)
+        self.assertEqual(L.cfg["project"]["name"], "my proj")
+        self.assertEqual(len(L.claims), 4)                       # lem:small2 and thm:small2 do not collide
+        shutil.rmtree(self.tmp / "ledger")
+        self.assertEqual(self.init("--yes", "--no-claims"), 0)
+        self.assertEqual(lg.Ledger(self.tmp, self.pname()).claims, {})
+
+    def test_vendor_copies_the_tool_and_the_ledger_works_from_the_copy(self):
+        self.assertEqual(self.init("--yes", "--vendor"), 0)
+        v = self.tmp / "ledger" / "vendor"
+        self.assertTrue((v / "ledger.py").is_file() and (v / "ledgercheck.sty").is_file())
+        self.assertEqual(lg.Ledger(self.tmp).cfg["paper"][self.pname()]["texinputs"], ["ledger/vendor"])
+        r = subprocess.run([sys.executable, str(v / "ledger.py"), "-C", str(self.tmp), "-P", self.pname(), "status"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "needs ssh-keygen")
+    def test_registers_an_author_key_that_can_attest(self):
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "k", "-f", str(self.tmp / "k"), "-q"], check=True)
+        self.assertEqual(self.init("--yes", "--key", str(self.tmp / "k.pub"), "--person", "K. Ey"), 0)
+        L = lg.Ledger(self.tmp, self.pname())
+        kid = list(L.keys)[0]
+        self.assertEqual(L.keys[kid]["person"], "K. Ey")
+        self.assertEqual(L.cfg["paper"][self.pname()]["authors"], [kid])
+        self.assertEqual(lg.main(["-C", str(self.tmp), "-P", self.pname(), "attest", "small", "--person", "K. Ey", "--level", "green",
+                                  "--sign", str(self.tmp / "k"), "--key", kid]), 0)
+        self.assertEqual(lg.Ledger(self.tmp, self.pname()).signature_of("small", "K. Ey"), "signed")
+        with self.assertRaises(SystemExit):                       # --key needs --person
+            shutil.rmtree(self.tmp / "ledger")
+            self.init("--yes", "--key", str(self.tmp / "k.pub"))
+
+    def test_a_paper_in_the_project_root_keeps_its_generated_files_out_of_ledger(self):
+        shutil.move(str(self.tmp / "paper" / "main.tex"), str(self.tmp / "main.tex"))
+        shutil.move(str(self.tmp / "paper" / "extra.tex"), str(self.tmp / "extra.tex"))
+        self.assertEqual(self.init("--yes"), 0)
+        self.assertEqual(lg.Ledger(self.tmp).cfg["generated"]["dirs"], ["ledger/generated"])
+
+
 class Adapters(unittest.TestCase):
     """Adapter dumps (FORMAT.md 2.6): the ProVerif extractor, and a made-up lab adapter with a spec part."""
     setUp, tearDown, L = Toy.setUp, Toy.tearDown, Toy.L

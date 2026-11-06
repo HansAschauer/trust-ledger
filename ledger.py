@@ -2500,6 +2500,286 @@ def cmd_diff(L, args):
     return 0
 
 
+# ---------------------------------------------------------------- init: bootstrap a new ledger
+INIT_SKIP_DIRS = {"ledger", "build", "dist", "out", "site", "node_modules", "__pycache__", "_attic", "venv"}
+INIT_CHECKLIST = """\
+# What an attesting person can tick; the items they tick are part of what they sign. Edit or delete freely.
+[checklist.C1]
+text = "compared the statement in the paper with the formal statement or with the check it rests on"
+applies = "claim"
+
+[checklist.C2]
+text = "re-ran the machine check or the script myself"
+applies = "claim"
+
+[checklist.H1]
+text = "found the cited source and the statement in it; theorem or page recorded in the citation's source field"
+applies = "hypothesis"
+
+[checklist.H2]
+text = "compared the cited statement with the formal definition of the hypothesis and with its statement in the paper"
+applies = "hypothesis"
+"""
+
+
+def slug(x, fallback="x"):
+    """A name that is safe as a bare TOML key and as a command-line argument."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(x)).strip("_") or fallback
+
+
+def git_user_name():
+    try:
+        r = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def find_paper_mains(root, depth=4):
+    """Main .tex files below root (a \\documentclass and a \\begin{document}), shallowest first, as paths relative to root."""
+    found = []
+    for dirpath, dirs, files in os.walk(root):
+        rel = Path(dirpath).relative_to(root)
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in INIT_SKIP_DIRS)
+        if len(rel.parts) >= depth:
+            dirs[:] = []
+        for f in sorted(files):
+            if f.endswith(".tex"):
+                try:
+                    t = (Path(dirpath) / f).read_text(errors="replace")[:300000]
+                except OSError:
+                    continue
+                if "\\documentclass" in t and "\\begin{document}" in t:
+                    found.append((rel / f).as_posix())
+    return sorted(found, key=lambda p: (len(Path(p).parts), p))
+
+
+def guess_paper_name(main, root_name, used):
+    """A name for a paper: its directory's or file's name unless that is generic (paper/main.tex), then the project's."""
+    generic = {"", ".", "paper", "papers", "tex", "src", "doc", "docs", "main", "article", "manuscript", "ms", "index", "root"}
+    p = Path(main)
+    base = next((x for x in (p.parent.name, p.stem, root_name) if x.lower() not in generic), "paper")
+    base = slug(base, "paper")
+    name, i = base, 2
+    while name in used:
+        name, i = f"{base}{i}", i + 1
+    return name
+
+
+def scan_results(root, main, texinputs, generated):
+    """Labels of the theorem-like results of a paper, in document order (what `uncovered` would list for an empty ledger)."""
+    search = [(root / d).resolve() for d in texinputs]
+    files, _ = tex_sources(root / main, search, [(root / d).resolve() for d in generated])
+    extra_stmt, extra_result, _ = discover_theorem_envs(files)
+    seen, out = set(), []
+    for f in files:
+        if f.suffix != ".tex":
+            continue
+        text = strip_comments(f.read_text(errors="replace"))
+        for lab in result_labels(text, find_environments(text, extra_stmt), extra_result):
+            if lab not in seen:
+                seen.add(lab)
+                out.append(lab)
+    return out
+
+
+def claim_names(labels):
+    used, out = set(), {}
+    for lab in labels:
+        base = slug(lab.split(":", 1)[-1], "claim")
+        if base in used:
+            base = slug(lab, "claim")
+        name, i = base, 2
+        while name in used:
+            name, i = f"{base}{i}", i + 1
+        used.add(name)
+        out[lab] = name
+    return out
+
+
+def init_plan(root, args, ask=None):
+    """Everything `init` would write, as {relative path: text}, plus notes for the person. `ask(prompt, default)` is used for
+    what is not given and is not obvious (None: never ask, refuse instead)."""
+    root = Path(root).resolve()
+    notes, files = [], {}
+    if (root / "ledger" / "ledger.toml").exists():
+        raise LedgerError(f"{root / 'ledger' / 'ledger.toml'} exists: this directory already has a ledger (init never overwrites)")
+    name = args.name or (ask("project name", slug(root.name, "project")) if ask else slug(root.name, "project"))
+    # papers: NAME=path from --paper, else found
+    papers = {}
+    for spec in args.paper or []:
+        n, _, m = spec.rpartition("=")
+        m = Path(m).as_posix() if not Path(m).is_absolute() else Path(os.path.relpath(m, root)).as_posix()
+        if not (root / m).is_file():
+            raise LedgerError(f"--paper {spec}: {root / m} is not a file")
+        papers[slug(n) if n else guess_paper_name(m, root.name, papers)] = m
+    if not papers:
+        cands = find_paper_mains(root)
+        if len(cands) == 1:
+            papers[guess_paper_name(cands[0], root.name, papers)] = cands[0]
+        elif len(cands) > 1:
+            if ask:
+                print("main .tex files found:")
+                for k, c in enumerate(cands, 1):
+                    print(f"  {k}. {c}")
+                pick = ask("which are papers of this ledger (numbers, comma separated)", "1")
+                try:
+                    chosen = [cands[int(x) - 1] for x in pick.replace(" ", "").split(",") if x]
+                except (ValueError, IndexError):
+                    raise LedgerError(f"not a list of numbers between 1 and {len(cands)}: {pick!r}")
+            else:
+                raise LedgerError("several main .tex files found; say which are papers with --paper NAME=path (repeatable):\n  "
+                                  + "\n  ".join(cands))
+            for c in chosen:
+                papers[guess_paper_name(c, root.name, papers)] = c
+        else:
+            notes.append("no main .tex file found: add a [paper.NAME] with `main = \"path/to/main.tex\"` to ledger/ledger.toml")
+    # where ledgercheck.sty is found
+    here = Path(__file__).resolve().parent
+    sty_dir = None
+    if args.vendor:
+        sty_dir = "ledger/vendor"
+    elif (here / "tex" / "ledgercheck.sty").is_file() and root in (here / "tex").parents:
+        sty_dir = Path(os.path.relpath(here / "tex", root)).as_posix()
+    else:       # outside the project, a path would differ from machine to machine
+        notes.append("ledgercheck.sty is not inside this project: run `init --vendor` (or copy it in) and put its directory into "
+                     "`texinputs` of [paper.NAME]; the paper and `review` need it")
+    # a key (optional)
+    key = None
+    if args.key:
+        kf = Path(args.key).expanduser()
+        if not kf.is_file():
+            raise LedgerError(f"--key {args.key}: no such file (give the public key, *.pub)")
+        person = args.person or (ask("your name (as it appears under attestations)", git_user_name()) if ask else "")
+        if not person:
+            raise LedgerError("--key needs --person NAME")
+        pub = kf.read_text().strip()
+        word = next((w for w in person.split() if len(re.sub(r"[^A-Za-z]", "", w)) >= 3), "")   # "A. Cook" -> cook
+        kid = slug(args.key_id or word.lower(), "me")
+        key = (kid, person, pub)
+    gen = {}
+    for n, m in papers.items():
+        d = Path(m).parent
+        gen[n] = ("ledger" if d.as_posix() == "." else d.as_posix() + "/ledger")
+    if any(g == "ledger" for g in gen.values()):          # a paper in the project root: its generated files cannot go into ledger/
+        for n in gen:
+            if gen[n] == "ledger":
+                gen[n] = "ledger/generated"
+        notes.append("a paper sits in the project root: its generated files go to ledger/generated; add that directory to TEXINPUTS "
+                     "when building the paper (or move the paper into its own directory)")
+    lines = [f"# Trust ledger of {name}. Written by `ledger.py init`; edit freely (format: docs/FORMAT.md of trust-ledger).",
+             "[project]", f"name = {json.dumps(name)}", ""]
+    for n, m in papers.items():
+        lines += [f"[paper.{n}]", f"main = {json.dumps(m)}"]
+        if sty_dir:
+            lines.append(f"texinputs = {json.dumps([sty_dir])}   # where ledgercheck.sty is found; also used by `review`")
+        if key:
+            lines.append(f"authors = {json.dumps([key[0]])}   # key ids: the people who vouch for this paper")
+        lines.append("")
+    if papers:
+        lines += ["[generated]", f"dirs = {json.dumps(sorted(set(gen.values())))}   # written by `ledger.py -P NAME tex`; never part of the hashed source", ""]
+    if not args.no_checklist:
+        lines += [INIT_CHECKLIST]
+    lines += ["# Machine-checked evidence comes in through adapters, for example Lean (see examples/ in trust-ledger):",
+              "# [adapter.lean]", '# prefix = "lean:"', '# dump = "lean.json"',
+              '# extract = "ledger/dump.sh | python3 ledger/vendor/lean.py"', ""]
+    files["ledger/ledger.toml"] = "\n".join(lines)
+    # claims: one skeleton per labelled result
+    total = 0
+    claims = ["# The results of the paper(s). A claim without `evidence` counts as an assertion (E5) until a check is recorded.",
+              '# To record one: `evidence = "E1"` and, for Lean, `lean = ["Namespace.theorem"]` (see examples/ in trust-ledger).', ""]
+    if not args.no_claims:
+        for n, m in papers.items():
+            try:
+                labels = scan_results(root, m, [], [gen[n]])
+            except OSError as e:
+                notes.append(f"paper {n}: could not be read ({e}); no claims were generated for it")
+                continue
+            names = claim_names(labels)
+            for lab in labels:
+                claims += [f"[claim.{names[lab]}]", f"label = {json.dumps(lab)}", f"paper = {json.dumps(n)}", ""]
+            total += len(labels)
+            if not labels:
+                notes.append(f"paper {n}: no labelled theorem-like results found; add [claim.NAME] entries by hand")
+    files["ledger/claims.toml"] = "\n".join(claims)
+    if key:
+        files["ledger/keys.toml"] = toml_record(f"[key.{key[0]}]", dict(person=key[1], public=key[2], source="paper")).lstrip("\n")
+    files["ledger/README.md"] = (
+        "# ledger/\n\nThe trust ledger of this project (tool: `ledger.py` of trust-ledger).\n\n"
+        "* `ledger.toml`: papers, checklist, adapters. `claims.toml`: the results the papers state. Both are edited by hand.\n"
+        "* `keys.toml` and `attestations.toml`: who vouches for what (`ledger.py addkey`, `ledger.py attest`).\n"
+        "* `lock*.json`, `*.json` dumps and `snapshots/` are written by the tool; commit them.\n\n"
+        "    python3 ledger.py -P NAME status      # what is attested, what is not\n"
+        "    python3 ledger.py -P NAME lock        # write the lock file, print the root\n")
+    return dict(root=root, name=name, papers=papers, files=files, notes=notes, claims=total, key=key, vendor=args.vendor,
+                sty_dir=sty_dir, generated=gen)
+
+
+def cmd_init(L, args):
+    """Bootstrap a ledger in the project directory (-C DIR, default: the current directory)."""
+    root = Path(args.dir).resolve()
+    interactive = sys.stdin.isatty() and not args.yes and not args.dry_run
+
+    def ask(prompt, default):
+        if not interactive:
+            return default
+        a = input(f"{prompt} [{default}]: " if default else f"{prompt}: ").strip()
+        return a or default
+    plan = init_plan(root, args, ask=ask if interactive else None)
+    if interactive and not args.key:
+        cands = sorted(Path.home().glob(".ssh/*.pub"))
+        if cands:
+            print("public keys found:", ", ".join(c.name for c in cands))
+            kf = input("register one as an author key now (path, or Enter to skip; `ledger.py addkey` does it later): ").strip()
+            if kf:
+                args.key = kf
+                args.name = plan["name"]                            # keep the answers given so far: do not ask again
+                args.paper = [f"{n}={m}" for n, m in plan["papers"].items()]
+                plan = init_plan(root, args, ask=ask)
+    for rel, text in plan["files"].items():
+        print(("would write " if args.dry_run else "writing ") + rel)
+    if args.dry_run:
+        for n in plan["notes"]:
+            print("note:", n)
+        return 0
+    (root / "ledger").mkdir(exist_ok=True)
+    for rel, text in plan["files"].items():
+        (root / rel).write_text(text if text.endswith("\n") else text + "\n")
+    if args.vendor:
+        v = root / "ledger" / "vendor"
+        v.mkdir(exist_ok=True)
+        shutil.copy(Path(__file__), v / "ledger.py")
+        sty = Path(__file__).resolve().parent / "tex" / "ledgercheck.sty"
+        if sty.is_file():
+            shutil.copy(sty, v / "ledgercheck.sty")
+        else:
+            plan["notes"].append("ledgercheck.sty was not found next to ledger.py and is not vendored")
+        print("copied ledger.py" + (" and ledgercheck.sty" if sty.is_file() else "") + " to ledger/vendor/")
+    # does what we wrote load?
+    problems = []
+    try:
+        chk = Ledger(root)
+        problems = chk.errors
+        n_claims = len(chk.claims)
+    except LedgerError as e:
+        problems, n_claims = [str(e)], 0
+    print(f"\nledger of {plan['name']!r}: {len(plan['papers'])} paper(s), {n_claims} claim(s)"
+          + (f", author key {plan['key'][0]!r}" if plan["key"] else ""))
+    for p in problems:
+        print("problem:", p)
+    for n in plan["notes"]:
+        print("note:", n)
+    first = next(iter(plan["papers"]), "NAME")
+    print("\nnext steps:")
+    print(f"  python3 ledger.py -P {first} status          # every result is 'none' until someone attests it")
+    if not plan["key"]:
+        print("  python3 ledger.py addkey ID --person \"Your Name\" --pub ~/.ssh/id_ed25519.pub     # to sign attestations")
+    print(f"  python3 ledger.py -P {first} attest CLAIM --person \"Your Name\" --level green --sign KEYFILE --key ID")
+    print(f"  python3 ledger.py -P {first} lock && python3 ledger.py -P {first} tex")
+    print(f"  in the paper's preamble:  \\usepackage[paper={first}]{{ledgercheck}}")
+    return 1 if problems else 0
+
+
 def cmd_addkey(L, args):
     pub = Path(args.pub).read_text().strip() if Path(args.pub).exists() else args.pub.strip()
     rec = dict(person=args.person, public=pub, source=args.source, url=args.url or "",
@@ -2727,6 +3007,16 @@ def main(argv=None):
     sub.add_parser("snapshot", help="record what current attestations bind to, so that `diff` can show later changes")
     p = sub.add_parser("diff", help="what changed since the latest attestation (of a claim, or --hypothesis) that has a snapshot")
     p.add_argument("claim", nargs="?"); p.add_argument("--hypothesis")
+    p = sub.add_parser("init", help="bootstrap a ledger in the project directory (-C DIR): ledger.toml, claims from the paper's labels, keys")
+    p.add_argument("--name", help="project name (default: the directory's name)")
+    p.add_argument("--paper", action="append", metavar="NAME=MAIN.tex", help="a paper of the ledger (repeatable); default: the main .tex file found")
+    p.add_argument("--no-claims", action="store_true", help="do not generate a claim for every labelled theorem-like result")
+    p.add_argument("--no-checklist", action="store_true", help="do not write the default checklist")
+    p.add_argument("--key", metavar="PUBKEY", help="register this public key as an author key of the paper(s)")
+    p.add_argument("--person", help="the key owner's name (with --key)"); p.add_argument("--key-id", help="id of the key (default: first name)")
+    p.add_argument("--vendor", action="store_true", help="copy ledger.py and ledgercheck.sty into ledger/vendor/ (the project carries its own tool)")
+    p.add_argument("--yes", action="store_true", help="never ask: take the defaults, refuse when something is ambiguous")
+    p.add_argument("--dry-run", action="store_true", help="say what would be written, write nothing")
     p = sub.add_parser("addkey"); p.add_argument("id"); p.add_argument("--person", required=True)
     p.add_argument("--pub", required=True, help="public key file or line")
     p.add_argument("--source", choices=("paper", "vouched", "url"), default="paper")
@@ -2749,6 +3039,8 @@ def main(argv=None):
 def run(args):
     if args.cmd == "commitment":
         return cmd_commitment(None, args)
+    if args.cmd == "init":
+        return cmd_init(None, args)
     if args.cmd in ("extract", "verify-attestation", "addkey"):  # no ledger build needed (the dump may not exist yet)
         L = Ledger.__new__(Ledger)
         L.root = Path(args.dir).resolve(); L.dir = L.root / "ledger"
