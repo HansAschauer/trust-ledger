@@ -932,8 +932,10 @@ class Ledger:
                         "no snapshot was recorded for any attestation of this; it cannot be compared (the snapshot is "
                         "written when an attestation is made, or by `ledger.py snapshot` while one is current)",
                         attestation=dict(person=a.get("person"), level=a.get("level"), date=a.get("date"), bound=a.get("bound")))
+        # attestations of the same state (same bound) all describe it: take the commit from the newest one that names one
+        hint = next((a for a in reversed(recs) if a.get("bound") == ref["bound"] and a.get("git_head")), ref)
         att = dict(person=ref.get("person"), level=ref.get("level"), date=ref.get("date"), bound=ref["bound"],
-                   git_head=ref.get("git_head", ""), git_dirty=ref.get("git_dirty"))
+                   git_head=hint.get("git_head", ""), git_dirty=hint.get("git_dirty"))
         if ref["bound"] == cur["bound"]:
             return dict(available=True, current=True, attestation=att, text=dict(old=cur["text"], new=cur["text"], changed=False),
                         nodes=[], uses=[])
@@ -954,7 +956,7 @@ class Ledger:
                 continue
             uses.append(dict(name=u, change="added" if not o else "removed" if not n else "changed",
                              old_text=o and o["text"], new_text=n and n["text"]))
-        return dict(available=True, current=False, attestation=att, git=self.git_since(ref.get("git_head")), unverified=(dict(commit=old.get("commit", "")) if partial else None),
+        return dict(available=True, current=False, attestation=att, git=self.git_since(att["git_head"]), unverified=(dict(commit=old.get("commit", "")) if partial else None),
                     text=dict(old=old["text"], new=cur["text"], changed=old["text"] != cur["text"]), nodes=nodes, uses=uses)
 
     # -- one claim in detail (what `why` prints; the web UI shows it next to the paper text and the Lean text) --

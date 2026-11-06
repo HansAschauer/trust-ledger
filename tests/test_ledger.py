@@ -921,6 +921,13 @@ class GitHistory(Toy):
         d = self.L().diff_since(claim="lem-succ")
         self.assertEqual(d["git"]["head"], base)
         self.assertEqual(d["attestation"]["git_head"], base)
+        # a later attestation of the same state that names no commit does not hide the commit of the earlier one
+        L = self.L()
+        L.append_attestation(L.make_attestation("Y", "green", claim="lem-succ", date="2099-01-01"), snapshot=False, git=False)
+        L = self.L()
+        self.assertEqual(L.attestation_state("lem-succ")[-1][0], "Y")
+        d = L.diff_since(claim="lem-succ")
+        self.assertEqual(d["attestation"]["git_head"], base)
         self.assertIsNone(self.L().git_since(""))
         self.assertIn("not in this repository", self.L().git_since("0" * 40)["error"])
         self.assertEqual(lg.main(["-C", str(self.p), "diff", "lem-succ"]), 0)
