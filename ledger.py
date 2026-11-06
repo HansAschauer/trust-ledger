@@ -572,6 +572,46 @@ def check_dump(d):
     return out
 
 
+# ---------------------------------------------------------------- git (optional: used when the project happens to be a repository)
+GIT_OWN_FILES = re.compile(r"^ledger/(attestations\.toml|keys\.toml|snapshots/.*|lock[^/]*\.json)$")
+
+
+def git(root, *args, check=False, binary=False):
+    """(returncode, stdout) of `git -C root ...`; (127, '') if git is not installed."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=not binary, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, b"" if binary else ""
+    return r.returncode, r.stdout
+
+
+def git_info(root):
+    """{head, dirty} for the repository the project directory lies in, or None (no git, no repository, no commit yet).
+    dirty: tracked files other than the ledger's own record files (attestations, keys, snapshots, lock files) differ from
+    HEAD, i.e. what was attested is not exactly what HEAD contains."""
+    rc, head = git(root, "rev-parse", "--verify", "-q", "HEAD")
+    if rc != 0 or not head.strip():
+        return None
+    rc, names = git(root, "diff", "--name-only", "--relative", "HEAD", "--", ".")
+    dirty = rc != 0 or any(n and not GIT_OWN_FILES.match(n) for n in names.splitlines())
+    return dict(head=head.strip(), dirty=dirty)
+
+
+def git_extract(root, commit, dest):
+    """Unpack the project directory as it was in `commit` into dest. True on success."""
+    rc, prefix = git(root, "rev-parse", "--show-prefix")
+    if rc != 0:
+        return False
+    try:
+        a = subprocess.Popen(["git", "-C", str(root), "archive", "--format=tar", f"{commit}:{prefix.strip()}" if prefix.strip() else commit],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        b = subprocess.run(["tar", "-x", "-C", str(dest)], stdin=a.stdout, capture_output=True)
+        a.stdout.close()
+        return a.wait() == 0 and b.returncode == 0
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------- loading
 class Ledger:
     def __init__(self, root, paper=None):
@@ -667,13 +707,18 @@ class Ledger:
             raise LedgerError("the signature does not verify against the registered public key: wrong --sign file for this key?")
         return pub
 
-    def append_attestation(self, rec, out=None, extra="", snapshot=True):
+    def append_attestation(self, rec, out=None, extra="", snapshot=True, git=True):
         """Append rec to ledger/attestations.toml (or `out`) as one whole record, under an exclusive lock so that
         concurrent writers cannot interleave. Unless `out` names a standalone file or snapshot is False, also record what
-        the attestation bound to (`write_snapshot`). Returns the path written."""
+        the attestation bound to (`write_snapshot`); and, if the project is a git repository (and git is True), the commit it
+        stood at as `git_head` and `git_dirty` (see git_info), which are not signed. Returns the path written."""
         import fcntl
         if snapshot and not out:
             self.write_snapshot(rec)
+        if git and not out and "git_head" not in rec:
+            info = git_info(self.root)
+            if info:      # where the project stood; not signed and not hashed: a hint for later, never evidence
+                rec["git_head"], rec["git_dirty"] = info["head"], info["dirty"]
         out = Path(out) if out else self.dir / "attestations.toml"
         text = extra + toml_record("[[attestation]]", rec)
         with open(out, "a", encoding="utf-8") as f:   # TOML is UTF-8; the length in bytes is what an undo needs
@@ -685,6 +730,9 @@ class Ledger:
     # -- snapshots: what an attestation bound to, kept so that `diff` can show what changed since (not hashed, not in the root) --
     def snapshot_path(self, bound):
         return self.dir / "snapshots" / f"{bound}.json"
+
+    def read_snapshot(self, bound):
+        return json.loads(self.snapshot_path(bound).read_text(encoding="utf-8"))
 
     def _spec_closure(self, ids):
         seen, todo = set(), [i for i in ids if i in self.spec_payload]
@@ -736,6 +784,9 @@ class Ledger:
         snap = self.snapshot_of(**t)
         if snap["bound"] != rec.get("bound"):
             return None
+        return self._write_snapshot_file(snap)
+
+    def _write_snapshot_file(self, snap):
         p = self.snapshot_path(snap["bound"])
         if not p.exists():
             p.parent.mkdir(exist_ok=True)
@@ -744,6 +795,100 @@ class Ledger:
                 f.write(json.dumps(snap, ensure_ascii=False, sort_keys=True))
             os.replace(tmp, p)                                          # atomic; the content is the same for every writer
         return p
+
+    def recover_snapshots(self, targets=None, depth=8, dry_run=False, partial=False):
+        """Snapshots of *stale* attestations that have none, rebuilt from the project's git history: find the commit that added
+        the attestation record (or the `git_head` it names), unpack the project as it was, load it with this ledger.py, and
+        take the snapshot of the claim there. It is written only if its bound hash is exactly the one the attestation names,
+        so what is recovered is provably what was attested; the commit and up to `depth` first-parent ancestors are tried.
+        Files that are not in git (a generated, ignored Lean dump, say) make the hash differ; then nothing is written, unless
+        `partial`: the statement text of the commit that added the attestation is kept as an *unverified* snapshot (marked
+        `partial`, no evidence nodes), good for showing how the text changed and for nothing else.
+        Returns [{target, kind, bound, status ('recovered'|'would recover'|'partial'|'not found'), commit, note}]."""
+        rc, _ = git(self.root, "rev-parse", "--git-dir")
+        if rc != 0:
+            raise LedgerError("this project is not in a git repository (or git is not installed): nothing to recover from")
+        wanted = {}
+        for a in self.attestations:
+            kind = "claim" if a.get("claim") else "hypothesis"
+            name, bound = a.get(kind), a.get("bound", "")
+            if not bound or a.get("_sig") in ("invalid", "revoked"):
+                continue
+            if self.snapshot_path(bound).exists() and not self.read_snapshot(bound).get("partial"):
+                continue
+            cur = (self.cspec if kind == "claim" else self.hspec).get(name)
+            if cur is None or cur == bound or (targets and name not in targets):
+                continue            # not in this scope, or current (record_snapshots takes those), or not asked for
+            wanted.setdefault(bound, dict(kind=kind, name=name, bound=bound, heads=[]))["heads"] += [a["git_head"]] if a.get("git_head") else []
+        papers = list(self.cfg.get("paper", {}))
+        trees, ledgers, results = {}, {}, []
+        tmp = Path(tempfile.mkdtemp(prefix="ledger-git-"))
+
+        def ledger_at(commit, paper):
+            if (commit, paper) not in ledgers:
+                if commit not in trees:
+                    d = tmp / commit[:12]
+                    d.mkdir(exist_ok=True)
+                    trees[commit] = d if git_extract(self.root, commit, d) and (d / "ledger" / "ledger.toml").is_file() else None
+                try:
+                    ledgers[(commit, paper)] = Ledger(trees[commit], paper) if trees[commit] else None
+                except Exception:       # an old tree that this ledger.py cannot read
+                    ledgers[(commit, paper)] = None
+            return ledgers[(commit, paper)]
+        try:
+            for bound, w in wanted.items():
+                kind, name = w["kind"], w["name"]
+                rc, found = git(self.root, "log", "--format=%H", f"-S{bound}", "--", "ledger")
+                added = found.split()
+                cands = list(w["heads"])
+                if added:        # newest first: the last one added the record
+                    rc, chain = git(self.root, "rev-list", "--first-parent", "-n", str(depth + 1), added[-1])
+                    cands += chain.split()
+                cands = list(dict.fromkeys(cands))
+                if kind == "claim":
+                    scopes = [self.claims[name].get("paper") if self.claims[name].get("paper") in papers else None]
+                else:
+                    scopes = list(dict.fromkeys([self.hypotheses.get(name, {}).get("paper")] + papers + [None]))
+                res = dict(target=name, kind=kind, bound=bound, status="not found", commit="", note="")
+                if not cands:
+                    res["note"] = "the history has no commit that added this attestation (is it committed?)"
+                for c in cands:
+                    for sc in scopes:
+                        L2 = ledger_at(c, sc)
+                        if L2 is None:
+                            continue
+                        try:
+                            snap = L2.snapshot_of(**{kind: name})
+                        except LedgerError:
+                            continue
+                        if snap["bound"] == bound:
+                            res.update(status="would recover" if dry_run else "recovered", commit=c)
+                            if not dry_run:
+                                self.snapshot_path(bound).unlink(missing_ok=True)       # replaces an earlier partial one
+                                self._write_snapshot_file(snap)
+                            break
+                    if res["commit"]:
+                        break
+                if not res["commit"] and cands:
+                    res["note"] = (f"tried {len(cands)} commit(s); none reproduces the attested state (generated or untracked inputs, "
+                                   "or the state was never committed)")
+                    if partial and not self.snapshot_path(bound).exists():
+                        for c in cands:
+                            L2 = next((ledgers[(c, sc)] for sc in scopes if ledgers.get((c, sc)) is not None), None)
+                            if L2 is None or (name not in (L2.claims if kind == "claim" else L2.scope_hyps)):
+                                continue
+                            snap = L2.snapshot_of(**{kind: name})
+                            snap = dict(snap, bound=bound, partial=True, commit=c, nodes={},
+                                        uses={u: dict(spec="", text=v["text"]) for u, v in snap["uses"].items()})
+                            res.update(status="partial" if not dry_run else "would keep partial", commit=c,
+                                       note="statement text only, not verified against the attested hash (evidence is not in git)")
+                            if not dry_run:
+                                self._write_snapshot_file(snap)
+                            break
+                results.append(res)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return results
 
     def record_snapshots(self):
         """Snapshots for every claim and hypothesis that has a current attestation but no snapshot yet (attestations made
@@ -758,6 +903,17 @@ class Ledger:
                         self.write_snapshot({kind: n, "bound": cur})
                         done.append(n)
         return done
+
+    def git_since(self, head, limit=300):
+        """Files of the project that differ between commit `head` (named in an attestation record) and the working tree, or None
+        without a head. {head, files, more, error}: error is set when the commit is not in this repository any more."""
+        if not head:
+            return None
+        rc, out = git(self.root, "diff", "--name-only", "--relative", head, "--", ".")
+        if rc != 0:
+            return dict(head=head, files=[], more=0, error="that commit is not in this repository (history rewritten, or another clone)")
+        files = [f for f in out.splitlines() if f and not GIT_OWN_FILES.match(f)]
+        return dict(head=head, files=files[:limit], more=max(0, len(files) - limit), error="")
 
     def diff_since(self, claim=None, hypothesis=None):
         """What changed since the latest attestation that has a snapshot, as plain data. `available` is False when no
@@ -776,13 +932,15 @@ class Ledger:
                         "no snapshot was recorded for any attestation of this; it cannot be compared (the snapshot is "
                         "written when an attestation is made, or by `ledger.py snapshot` while one is current)",
                         attestation=dict(person=a.get("person"), level=a.get("level"), date=a.get("date"), bound=a.get("bound")))
-        att = dict(person=ref.get("person"), level=ref.get("level"), date=ref.get("date"), bound=ref["bound"])
+        att = dict(person=ref.get("person"), level=ref.get("level"), date=ref.get("date"), bound=ref["bound"],
+                   git_head=ref.get("git_head", ""), git_dirty=ref.get("git_dirty"))
         if ref["bound"] == cur["bound"]:
             return dict(available=True, current=True, attestation=att, text=dict(old=cur["text"], new=cur["text"], changed=False),
                         nodes=[], uses=[])
-        old = json.loads(self.snapshot_path(ref["bound"]).read_text(encoding="utf-8"))
+        old = self.read_snapshot(ref["bound"])
+        partial = bool(old.get("partial"))
         nodes = []
-        for i in sorted(set(old["nodes"]) | set(cur["nodes"])):
+        for i in ([] if partial else sorted(set(old["nodes"]) | set(cur["nodes"]))):
             o, n = old["nodes"].get(i), cur["nodes"].get(i)
             if o and n and o["spec"] == n["spec"]:
                 continue
@@ -792,11 +950,11 @@ class Ledger:
         uses = []
         for u in sorted(set(old["uses"]) | set(cur["uses"])):
             o, n = old["uses"].get(u), cur["uses"].get(u)
-            if o and n and o["spec"] == n["spec"]:
+            if o and n and (o["text"] == n["text"] if partial else o["spec"] == n["spec"]):
                 continue
             uses.append(dict(name=u, change="added" if not o else "removed" if not n else "changed",
                              old_text=o and o["text"], new_text=n and n["text"]))
-        return dict(available=True, current=False, attestation=att,
+        return dict(available=True, current=False, attestation=att, git=self.git_since(ref.get("git_head")), unverified=(dict(commit=old.get("commit", "")) if partial else None),
                     text=dict(old=old["text"], new=cur["text"], changed=old["text"] != cur["text"]), nodes=nodes, uses=uses)
 
     # -- one claim in detail (what `why` prints; the web UI shows it next to the paper text and the Lean text) --
@@ -847,6 +1005,8 @@ class Ledger:
         d["paper"] = c.get("paper")
         d["bound"] = self.cspec[n]
         d["hypotheses"] = self.claim_hypotheses(n)
+        st = self.assessment_state(n)
+        d["assessment"] = dict(st, notes=self.assessments[n].get("notes", "")) if st else None
         return d
 
     def hypothesis_detail(self, h):
@@ -866,6 +1026,33 @@ class Ledger:
                                        signature=self.signature_of(h, p, "hypothesis"))
                                   for p, lvl, date, cur in self.hypothesis_state(h)],
                     used_by=sorted(n for n in self.claims if h in self.claim_hypotheses(n)))
+
+    # -- assessments: a model's comparison of paper text, Lean statement and back-translation (FORMAT.md 3.3) --
+    def reading_hash(self, n):
+        """sha256 of the back-translation file of claim n ('' if there is none)."""
+        if not self.cfg.get("review", {}).get("readings"):
+            return ""
+        rp = self.review_file("readings", n)
+        return sha_file(rp) if rp and rp.is_file() else ""
+
+    def assessment_state(self, n):
+        """None without an assessment, else {verdict, model, date, state, why}. state is `current` (it names the claim's
+        present spec hash, and the present back-translation if it names one), `outdated` (it names another: the statement or
+        what it rests on changed since, or the back-translation was redone) or `unbound` (it names none; written before
+        assessments recorded what they judged, so nothing can be said)."""
+        a = self.assessments.get(n)
+        if a is None:
+            return None
+        why = []
+        if not a.get("spec"):
+            state = "unbound"
+        else:
+            if a["spec"] != self.cspec.get(n):
+                why.append("the claim's statement or what it rests on changed since")
+            if a.get("reading") and a["reading"] != self.reading_hash(n):
+                why.append("the back-translation changed since")
+            state = "outdated" if why else "current"
+        return dict(verdict=a.get("verdict", ""), model=a.get("model", ""), date=a.get("date", ""), state=state, why=why)
 
     # -- structured status (what `status` prints; `status --json` prints it as JSON) --
     def status_data(self):
@@ -888,7 +1075,7 @@ class Ledger:
                                attestations=att, register=len(self.register[n]), bound=self.cspec.get(n),
                                labels=c.get("labels") or ([c["label"]] if c.get("label") else []),
                                paper=c.get("paper"), uses=list(c.get("uses", [])),
-                               hypotheses=self.claim_hypotheses(n)))
+                               hypotheses=self.claim_hypotheses(n), assessment=self.assessment_state(n)))
         hyps = []
         for h in self.scope_hyps:
             meta = self.hypotheses.get(h, {})
@@ -916,6 +1103,10 @@ class Ledger:
         for name, u in self.unresolved.items():
             if u:
                 messages.append(f"warning: paper {name}: could not resolve {', '.join(u)}")
+        for n in sorted(self.claims):
+            st = self.assessment_state(n)
+            if st and st["state"] == "outdated":
+                messages.append(f"warning: the assessment of {n} is outdated: {'; '.join(st['why'])}")
         messages += ["warning: " + w for w in self.warnings]
         messages += ["error: " + e for e in self.errors]
         return dict(ledger_tool=__version__, format=FORMAT_VERSION, paper=self.paper, root=self.root_hash, tools=tools,
@@ -1272,7 +1463,7 @@ class Ledger:
                 a = self.assessments[n]
                 payload["assess:" + n] = dict(kind="assessment", provenance="generated", content=dict(
                     claim=n, model=a.get("model", ""), date=a.get("date", ""), verdict=a.get("verdict", ""),
-                    notes=a.get("notes", "")))
+                    notes=a.get("notes", ""), **{k: a[k] for k in ("spec", "reading") if a.get(k)}))
                 deps["assess:" + n] = []
                 d.append("assess:" + n)
             for u in c.get("uses", []):
@@ -2305,8 +2496,13 @@ UNCLEAR: could not be decided.\par""" % tex_esc(L.paper))
         a = L.assessments.get(n)
         out.append("{\\bfseries Assessment} {\\small(generated by a model; an aid for the reviewer, not an attestation)}\\par\\smallskip")
         if a:
+            ast = L.assessment_state(n)
+            note = {"outdated": "OUTDATED: " + "; ".join(ast["why"]) + ". Read the verdict as describing an older state.",
+                    "unbound": "not bound to a statement: it does not record what it judged, so it may be out of date"}.get(ast["state"])
             out.append(f"\\noindent\\textbf{{{VERDICT_TEXT.get(a.get('verdict'), a.get('verdict', '?'))}}} "
-                       f"{{\\small({tex_esc(a.get('model', '?'))}, {tex_esc(a.get('date', ''))})}}\\par\n{a.get('notes', '')}")
+                       f"{{\\small({tex_esc(a.get('model', '?'))}, {tex_esc(a.get('date', ''))})}}\\par\n"
+                       + (f"\\noindent{{\\small\\bfseries {tex_esc(note)}}}\\par\\smallskip\n" if note else "")
+                       + a.get('notes', ''))
         else:
             out.append("\\noindent\\textit{No assessment yet.}")
     if defs_section:
@@ -2468,11 +2664,104 @@ def cmd_attest(L, args):
     return 0
 
 
+# ---------------------------------------------------------------- assess: write or bind an assessment
+def assessment_blocks(text):
+    """{claim name: (first line, line after the last)} of the `[assessment.NAME]` tables of a TOML text. Multi-line strings
+    are skipped over, so a line starting with `[` inside `notes` does not end a table."""
+    lines, blocks, cur, ml = text.split("\n"), {}, None, None
+    for i, ln in enumerate(lines):
+        if ml is None and ln.startswith("["):
+            if cur:
+                blocks[cur[0]] = (cur[1], i)
+                cur = None
+            m = re.match(r'\[assessment\.(?:"([^"]+)"|([A-Za-z0-9_-]+))\]\s*(#.*)?$', ln)
+            if m:
+                cur = (m.group(1) or m.group(2), i)
+        for d in ("'''", '"""'):
+            if ml in (None, d) and ln.count(d) % 2 == 1:
+                ml = None if ml == d else d
+                break
+    if cur:
+        blocks[cur[0]] = (cur[1], len(lines))
+    return blocks
+
+
+def toml_multiline(text):
+    """A TOML value for text that may contain newlines and backslashes (a LaTeX fragment): a literal string if possible."""
+    if "'''" not in text:
+        return "'''\n" + text.strip("\n") + "\n'''"
+    return json.dumps(text, ensure_ascii=False)
+
+
+def cmd_assess(L, args):
+    """Record an assessment of a claim together with the state it judged, or bind an existing one to the present state."""
+    names = args.claims
+    for n in names:
+        if n not in L.claims:
+            raise LedgerError(f"unknown claim {n}")
+    where = {}
+    for f in sorted(L.dir.glob("*.toml")):
+        for n in assessment_blocks(f.read_text(encoding="utf-8")):
+            where[n] = f
+    if args.bind:
+        if args.verdict or args.notes_file or args.model:
+            raise LedgerError("--bind only adds what an existing assessment judged; do not combine it with --verdict/--model/--notes-file")
+        for n in names:
+            if n not in where:
+                raise LedgerError(f"{n} has no assessment to bind")
+            f = where[n]
+            text = f.read_text(encoding="utf-8")
+            a, b = assessment_blocks(text)[n]
+            lines = text.split("\n")
+            body = [x for x in lines[a + 1:b] if not re.match(r"(spec|reading)\s*=", x)]
+            extra = [f"spec = {json.dumps(L.cspec[n])}"] + ([f"reading = {json.dumps(L.reading_hash(n))}"] if L.reading_hash(n) else [])
+            f.write_text("\n".join(lines[:a + 1] + extra + body + lines[b:]), encoding="utf-8")
+            print(f"bound the assessment of {n} to the present state (spec {L.cspec[n][:12]}): it now counts as current. "
+                  f"That says you know it still describes this statement; it was last written {L.assessments[n].get('date', '?')}.")
+        return 0
+    if len(names) != 1:
+        raise LedgerError("give exactly one claim to write an assessment for (or --bind for several)")
+    n = names[0]
+    if args.verdict not in ASSESSMENT_VERDICTS:
+        raise LedgerError(f"--verdict must be one of {', '.join(ASSESSMENT_VERDICTS)}")
+    if not args.model:
+        raise LedgerError("--model NAME is needed: who or what wrote the assessment")
+    if not (args.notes_file or args.notes):
+        raise LedgerError("--notes-file FILE (a LaTeX fragment) or --notes TEXT is needed")
+    notes = Path(args.notes_file).read_text(encoding="utf-8") if args.notes_file else args.notes
+    rec = [f"[assessment.{n}]", f"model = {json.dumps(args.model, ensure_ascii=False)}",
+           f"date = {json.dumps(args.date or datetime.date.today().isoformat())}", f"verdict = {json.dumps(args.verdict)}",
+           f"spec = {json.dumps(L.cspec[n])}"] + ([f"reading = {json.dumps(L.reading_hash(n))}"] if L.reading_hash(n) else []) \
+        + [f"notes = {toml_multiline(notes)}"]
+    f = where.get(n) or (L.dir / "assessments.toml")
+    text = f.read_text(encoding="utf-8") if f.exists() else ""
+    if n in where:
+        a, b = assessment_blocks(text)[n]
+        lines = text.split("\n")
+        tail = lines[b:]
+        out = "\n".join(lines[:a] + rec + ([""] if tail and tail[0].strip() else []) + tail)
+    else:
+        out = text.rstrip("\n") + ("\n\n" if text.strip() else "") + "\n".join(rec) + "\n"
+    f.write_text(out, encoding="utf-8")
+    print(f"recorded the {args.verdict} assessment of {n} by {args.model}, bound to spec {L.cspec[n][:12]}" +
+          (f" and back-translation {L.reading_hash(n)[:12]}" if L.reading_hash(n) else "") +
+          f" -> {f.relative_to(L.root)}" + ("" if n not in where else " (replaced the earlier one)"))
+    return 0
+
+
 def cmd_snapshot(L, args):
-    """Record snapshots for current attestations that have none (so that `diff` can later show what changed)."""
+    """Record snapshots for current attestations that have none (so that `diff` can later show what changed); with
+    --from-git, also rebuild those of stale attestations from the project's history."""
     done = L.record_snapshots()
-    print(f"recorded {len(done)} snapshot(s)" + (": " + ", ".join(done) if done else "") +
-          f"; the others already have one or have no current attestation")
+    print(f"recorded {len(done)} snapshot(s) of current attestations" + (": " + ", ".join(done) if done else "") +
+          "; the others already have one or have no current attestation")
+    if args.from_git:
+        res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, dry_run=args.dry_run, partial=args.partial)
+        for r in res:
+            print(f"  {r['kind']} {r['target']} (bound {r['bound'][:12]}): {r['status']}" +
+                  (f" from commit {r['commit'][:10]}" if r["commit"] else "") + (f"; {r['note']}" if r["note"] else ""))
+        if not res:
+            print("no stale attestation without a snapshot in this scope")
     return 0
 
 
@@ -2491,11 +2780,19 @@ def cmd_diff(L, args):
     if d["current"]:
         print("  nothing changed: that attestation is current")
         return 0
+    if d.get("unverified"):
+        print(f"  note: this snapshot was rebuilt from git commit {d['unverified']['commit'][:10]} and is not verified against the attested "
+              "hash; only the statement text is compared, not the evidence")
     t = d["text"]
     print("  statement: " + ("changed" if t["changed"] else "unchanged"))
     if t["changed"]:
         for line in difflib.unified_diff(t["old"].splitlines(), t["new"].splitlines(), "attested", "now", lineterm="", n=1):
             print("    " + line)
+    g = d.get("git")
+    if g:
+        print(f"  attested at git commit {g['head'][:10]}" + ("" if not a.get("git_dirty") else " (the tree had uncommitted changes)") +
+              (f"; {g['error']}" if g["error"] else f"; files changed since: {len(g['files']) + g['more']}" +
+               ("" if not g["files"] else " (" + ", ".join(g["files"][:6]) + (", ..." if len(g["files"]) > 6 else "") + ")")))
     for u in d["uses"]:
         print(f"  uses {u['name']}: {u['change']}")
     for n in d["nodes"]:
@@ -3008,7 +3305,17 @@ def main(argv=None):
     p.add_argument("--pub", help="public key file (standalone attestations by someone who is not in keys.toml)")
     p.add_argument("--no-snapshot", action="store_true", help="do not record what the attestation binds to (ledger/snapshots/)")
     p.add_argument("--out", help="write a standalone attestation file instead of appending to ledger/attestations.toml")
-    sub.add_parser("snapshot", help="record what current attestations bind to, so that `diff` can show later changes")
+    p = sub.add_parser("assess", help="record a model's assessment of a claim together with the state it judged (or --bind an existing one)")
+    p.add_argument("claims", nargs="+", metavar="CLAIM")
+    p.add_argument("--verdict", choices=ASSESSMENT_VERDICTS); p.add_argument("--model"); p.add_argument("--date")
+    p.add_argument("--notes-file", help="the assessment's text, a LaTeX fragment"); p.add_argument("--notes")
+    p.add_argument("--bind", action="store_true", help="mark existing assessments as describing the present state of their claims")
+    p = sub.add_parser("snapshot", help="record what current attestations bind to, so that `diff` can show later changes")
+    p.add_argument("targets", nargs="*", metavar="CLAIM", help="with --from-git: only these claims")
+    p.add_argument("--from-git", action="store_true", help="also rebuild the snapshots of stale attestations from the git history")
+    p.add_argument("--depth", type=int, default=8, help="with --from-git: how many earlier commits to try (default 8)")
+    p.add_argument("--dry-run", action="store_true", help="with --from-git: say what could be recovered, write nothing")
+    p.add_argument("--partial", action="store_true", help="with --from-git: where the exact state cannot be rebuilt (evidence not in git), keep the statement text as an unverified snapshot")
     p = sub.add_parser("diff", help="what changed since the latest attestation (of a claim, or --hypothesis) that has a snapshot")
     p.add_argument("claim", nargs="?"); p.add_argument("--hypothesis")
     p = sub.add_parser("init", help="bootstrap a ledger in the project directory (-C DIR): ledger.toml, claims from the paper's labels, keys")

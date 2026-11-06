@@ -780,6 +780,180 @@ class LibraryApi(Toy):
         self.assertEqual(len(recs), 60)
 
 
+class Assessments(Toy):
+    """Assessments record what they judged, and say when that has changed."""
+
+    def assess(self, *args):
+        return lg.main(["-C", str(self.p), "assess", *args])
+
+    def test_a_new_assessment_is_bound_and_goes_outdated_with_the_claim(self):
+        self.assertEqual(self.assess("lem-succ", "--verdict", "consistent", "--model", "M", "--notes", r"Same \\(n\\)."), 0)
+        L = self.L()
+        st = L.assessment_state("lem-succ")
+        self.assertEqual((st["state"], st["verdict"]), ("current", "consistent"))
+        self.assertEqual(L.errors, [])
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))      # a dependency of the claim changes
+        L = self.L()
+        st = L.assessment_state("lem-succ")
+        self.assertEqual(st["state"], "outdated")
+        self.assertIn("changed", st["why"][0])
+        self.assertTrue(any("assessment of lem-succ is outdated" in m for m in L.status_data()["messages"]))
+        self.assertEqual(L.status_data()["claims"][[c["name"] for c in L.status_data()["claims"]].index("lem-succ")]["assessment"]["state"], "outdated")
+        json.dumps(L.claim_detail("lem-succ"))
+
+    def test_replacing_keeps_the_other_assessments_and_the_file_valid(self):
+        for n in ("lem-succ", "thm-twice"):
+            self.assess(n, "--verdict", "check", "--model", "M", "--notes", "first")
+        self.assess("lem-succ", "--verdict", "consistent", "--model", "M2", "--notes", "[not a table]\n[assessment.zzz] in the text")
+        L = self.L()
+        self.assertEqual(sorted(L.assessments), ["lem-succ", "thm-twice"])
+        self.assertEqual(L.assessments["lem-succ"]["model"], "M2")
+        self.assertIn("[assessment.zzz]", L.assessments["lem-succ"]["notes"])
+        self.assertEqual(L.assessments["thm-twice"]["notes"].strip(), "first")
+
+    def test_legacy_assessments_are_unbound_until_someone_binds_them(self):
+        (self.p / "ledger" / "assessments.toml").write_text(
+            '# a comment\n[assessment.lem-succ]\nmodel = "old"\ndate = "2026-10-08"\nverdict = "consistent"\n'
+            "notes = '''\n[looks like a table]\ntext\n'''\n\n[assessment.thm-twice]\nmodel = \"old\"\ndate = \"2026-10-08\"\nverdict = \"partial\"\nnotes = \"x\"\n")
+        root0 = self.L().root_hash
+        L = self.L()
+        self.assertEqual([L.assessment_state(n)["state"] for n in ("lem-succ", "thm-twice")], ["unbound", "unbound"])
+        self.assertFalse(any("outdated" in m for m in L.status_data()["messages"]))     # no false alarm for legacy ones
+        self.assertEqual(self.assess("lem-succ", "--bind"), 0)
+        L = self.L()
+        self.assertEqual(L.assessment_state("lem-succ")["state"], "current")
+        self.assertEqual(L.assessment_state("thm-twice")["state"], "unbound")            # only the named one
+        self.assertIn("[looks like a table]", L.assessments["lem-succ"]["notes"])
+        self.assertNotEqual(L.root_hash, root0)                                          # binding is a recorded change
+        self.assertEqual(self.assess("lem-succ", "--bind"), 0)                           # idempotent
+        self.assertEqual(self.L().assessment_state("lem-succ")["state"], "current")
+
+    def test_errors(self):
+        with self.assertRaises(SystemExit):
+            self.assess("nope", "--verdict", "check", "--model", "M", "--notes", "x")
+        with self.assertRaises(SystemExit):
+            self.assess("lem-succ", "--bind")                                            # no assessment there
+        with self.assertRaises(SystemExit):
+            self.assess("lem-succ", "--model", "M", "--notes", "x")                      # no verdict
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class GitHistory(Toy):
+    """Optional git integration: where an attestation was made, and snapshots rebuilt from the history."""
+
+    def g(self, *args):
+        env = dict(os.environ, GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@example.org", GIT_COMMITTER_NAME="T",
+                   GIT_COMMITTER_EMAIL="t@example.org", GIT_CONFIG_GLOBAL="/dev/null")
+        return subprocess.run(["git", "-C", str(self.p), *args], capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+    def commit(self, msg):
+        self.g("add", "-A")
+        self.g("commit", "-q", "-m", msg)
+        return self.g("rev-parse", "HEAD")
+
+    def start(self, ignore_dump=False):
+        self.g("init", "-q", "-b", "main")
+        if ignore_dump:
+            (self.p / ".gitignore").write_text("ledger/lean.json\nledger/lean-dump.json\n")
+        return self.commit("base")
+
+    def attest(self, claim="lem-succ", *extra):
+        lg.main(["-C", str(self.p), "attest", claim, "--person", "X", "--level", "green", *extra])
+
+    def change_paper(self):
+        tex = self.p / "paper" / "chapters" / "results.tex"
+        tex.write_text(tex.read_text().replace("\\label{lem:succ}", "\\label{lem:succ} In particular for all naturals."))
+
+    def test_attestations_record_the_commit_not_signed_not_hashed(self):
+        base = self.start()
+        root0 = self.L().root_hash
+        self.attest("lem-succ")
+        recs = tomllib.loads((self.p / "ledger" / "attestations.toml").read_text())["attestation"]
+        self.assertEqual((recs[0]["git_head"], recs[0]["git_dirty"]), (base, False))
+        self.assertNotIn("git_head", lg.attestation_message("p", recs[0]).decode())        # not part of what is signed
+        self.change_paper()                                                                # uncommitted edit of a tracked file
+        self.attest("thm-twice")
+        recs = tomllib.loads((self.p / "ledger" / "attestations.toml").read_text())["attestation"]
+        self.assertTrue(recs[1]["git_dirty"])
+        self.assertEqual(self.L().errors, [])
+        # the hint does not enter the root: the same attestation without it gives the same root
+        r1 = self.L().root_hash
+        txt = (self.p / "ledger" / "attestations.toml").read_text()
+        (self.p / "ledger" / "attestations.toml").write_text("\n".join(x for x in txt.split("\n") if not x.startswith("git_")))
+        self.assertEqual(self.L().root_hash, r1)
+        self.assertNotEqual(r1, root0)
+
+    def test_no_repository_no_fields_and_no_failure(self):
+        self.attest("lem-succ")
+        self.assertNotIn("git_head", (self.p / "ledger" / "attestations.toml").read_text())
+        with self.assertRaises(lg.LedgerError):
+            self.L().recover_snapshots()
+
+    def test_snapshots_are_rebuilt_from_the_history_and_checked_against_the_hash(self):
+        self.start()
+        self.attest("lem-succ", "--no-snapshot")
+        self.commit("attested")
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))               # the claim goes stale; no snapshot exists
+        self.change_paper()
+        self.commit("changed")
+        L = self.L()
+        self.assertFalse(L.diff_since(claim="lem-succ")["available"])
+        dry = L.recover_snapshots(dry_run=True)
+        self.assertEqual([(r["target"], r["status"]) for r in dry], [("lem-succ", "would recover")])
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())                        # a dry run writes nothing
+        res = self.L().recover_snapshots()
+        self.assertEqual([r["status"] for r in res], ["recovered"])
+        d = self.L().diff_since(claim="lem-succ")
+        self.assertTrue(d["available"] and not d["current"])
+        self.assertIsNone(d["unverified"])
+        self.assertIn("In particular", d["text"]["new"])
+        self.assertNotIn("In particular", d["text"]["old"])
+        self.assertTrue(any(n["id"].endswith("Toy.f") and n["change"] == "changed" for n in d["nodes"]))
+        self.assertEqual(self.L().recover_snapshots(), [])                                  # nothing left to do
+
+    def test_files_changed_since_the_commit_of_the_attestation(self):
+        base = self.start()
+        self.attest("lem-succ")                                                             # with snapshot and git_head
+        self.commit("attested")
+        self.change_paper()
+        self.commit("changed")
+        self.assertEqual(self.L().git_since(base)["files"], ["paper/chapters/results.tex"])   # its own record files are left out
+        d = self.L().diff_since(claim="lem-succ")
+        self.assertEqual(d["git"]["head"], base)
+        self.assertEqual(d["attestation"]["git_head"], base)
+        self.assertIsNone(self.L().git_since(""))
+        self.assertIn("not in this repository", self.L().git_since("0" * 40)["error"])
+        self.assertEqual(lg.main(["-C", str(self.p), "diff", "lem-succ"]), 0)
+
+    def test_the_head_named_in_the_record_is_tried_first(self):
+        self.start()
+        self.attest("lem-succ", "--no-snapshot")                                           # records git_head = base
+        self.commit("attested")
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))
+        self.commit("changed")
+        res = self.L().recover_snapshots()
+        self.assertEqual(res[0]["status"], "recovered")
+
+    def test_what_is_not_in_git_cannot_be_rebuilt_exactly_only_as_text(self):
+        self.start(ignore_dump=True)                                                       # the dumps are generated and not committed
+        self.attest("lem-succ", "--no-snapshot")
+        self.commit("attested")
+        self.change_paper()
+        self.commit("changed")
+        # the working tree still has the dumps, but the history has not
+        res = self.L().recover_snapshots()
+        self.assertEqual([r["status"] for r in res], ["not found"])
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())                        # nothing unverified without asking for it
+        res = self.L().recover_snapshots(partial=True)
+        self.assertEqual([r["status"] for r in res], ["partial"])
+        d = self.L().diff_since(claim="lem-succ")
+        self.assertTrue(d["available"])
+        self.assertTrue(d["unverified"]["commit"])
+        self.assertTrue(d["text"]["changed"])
+        self.assertEqual(d["nodes"], [])
+        self.assertEqual(lg.main(["-C", str(self.p), "diff", "lem-succ"]), 0)
+
+
 class Init(unittest.TestCase):
     """`ledger.py init`: a new ledger from a paper's labels."""
     PAPER = (r"\documentclass{article}\usepackage{amsthm}\newtheorem{theorem}{Theorem}\newtheorem{lemma}[theorem]{Lemma}" "\n"

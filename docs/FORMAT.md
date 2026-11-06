@@ -189,6 +189,11 @@ Human-written nodes live in TOML files below `ledger/`, one table per node (see
   (mandatory for yellow), `checklist` (items done, e.g. `["A1","A2"]`), `bound` (the claim's spec
   hash at the time of attesting).
 
+A record may also carry `git_head` and `git_dirty`, written by tools when the project is a git repository: the commit the
+project stood at and whether other tracked files than the ledger's own record files differed from it. They are **not signed
+and not hashed** (they are not in the root and not in the signed message): a hint for finding the state again, never
+evidence, since history can be rewritten.
+
 An attestation is **stale** when `bound` differs from the claim's current spec hash. Stale
 attestations are reported, never silently rewritten.
 
@@ -249,6 +254,13 @@ back-translation are *generated* nodes (provenance `generated`) attached to the 
 * They are dependencies of the claim, so they are covered by the root (the record shows which aids existed), but they
   are **excluded from the claim's spec hash**: regenerating a back-translation or an assessment never resets an
   attestation. Neither is an attestation: they say nothing about who stands behind the claim.
+* An assessment may name what it judged: `spec` (the claim's spec hash at the time) and `reading` (the sha256 of the
+  back-translation file). Both are optional and are part of the node's content only when present, so assessments written
+  without them keep their hashes. Tools compare them with the present values and report the assessment as `current`,
+  `outdated` (a value differs: the statement or what it rests on changed, or the back-translation was redone) or `unbound`
+  (it names nothing). Nothing is reset by this; it is a report, since an assessment is an aid. `ledger.py assess` writes
+  an assessment together with both values, `assess --bind` adds them to an existing one (and so asserts that it still
+  describes the present statement).
 
 ### 3.4 Data, steps and checks
 

@@ -185,6 +185,9 @@ python3 ledger.py -P NAME verify-attestation me.att.toml --lock ledger/lock-NAME
 python3 ledger.py attest --hypothesis NAME --person NAME --level green   # "this hypothesis is a known theorem"
 python3 ledger.py diff CLAIM        # what changed since the latest attestation of CLAIM that has a snapshot (--hypothesis NAME)
 python3 ledger.py snapshot          # record snapshots for current attestations that have none (see below)
+python3 ledger.py snapshot --from-git [--partial] [--dry-run]   # rebuild the snapshots of stale attestations from the git history
+python3 ledger.py assess CLAIM --verdict consistent --model NAME --notes-file F.tex   # record an assessment with the state it judged
+python3 ledger.py assess CLAIM... --bind   # mark existing assessments as describing the present statement
 python3 ledger.py extract           # run the extractors of all adapters, write their dumps
 python3 ledger.py check             # run the [check.NAME] commands, record their results
 python3 ledger.py reproduce         # re-run the command steps in a scratch copy, compare their outputs
@@ -201,6 +204,19 @@ and value), plus the statements of the claims it uses. The file is named by the 
 the root (it is not part of the ledger format; delete it and nothing else changes), and `diff` compares it with the current
 state. Attestations made before this existed have no snapshot; `ledger.py snapshot` records one for every attestation that is
 current *now*, so run it while they are. `attest --no-snapshot` and standalone attestation files (`--out`) write none.
+
+**Git.** If the project is a git repository, `attest` also writes `git_head` and `git_dirty` into the record: where the project
+stood. They are not signed and not hashed, only a hint. `snapshot --from-git` uses them, or searches the history for the
+commit that added the attestation, unpacks the project as it was, loads it and takes the snapshot there; it is written only if
+its hash is exactly the attested one. That works if everything the ledger reads is in git. A generated file that is ignored
+(a Lean dump, say) is not, and then nothing is written; `--partial` keeps the statement text of that commit as an unverified
+snapshot (marked as such by `diff`). Commit the dumps, or rely on the snapshots that `attest` writes from now on.
+`diff` also lists the files that changed since that commit.
+
+**Assessments.** A model's assessment of a claim (`[assessment.NAME]`) is an aid, not an attestation, and does not enter the claim's
+hash. It can record what it judged (`spec`, `reading`); `status` then warns when it is `outdated`, and the review packet says so
+next to the verdict. Assessments without those values are `unbound`: `assess --bind` adds them, which says you know they still
+fit; for those whose claim changed, write a new one with `assess`.
 
 As a library: `import ledger` gives `Ledger(root, paper)` with `status_data()` (what `status --json` prints),
 `make_attestation`, `sign_attestation` and `append_attestation` (what `attest` does, one step each; the append is
