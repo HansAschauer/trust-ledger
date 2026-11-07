@@ -185,7 +185,7 @@ python3 ledger.py -P NAME verify-attestation me.att.toml --lock ledger/lock-NAME
 python3 ledger.py attest --hypothesis NAME --person NAME --level green   # "this hypothesis is a known theorem"
 python3 ledger.py diff CLAIM        # what changed since the latest attestation of CLAIM that has a snapshot (--hypothesis NAME)
 python3 ledger.py snapshot          # record snapshots for current attestations that have none (see below)
-python3 ledger.py snapshot --from-git [--partial] [--dry-run] [--depth N] [--ahead N]   # rebuild the snapshots of stale attestations from the git history
+python3 ledger.py snapshot --from-git [--partial] [--dry-run] [--depth N] [--ahead N] [--overlay PATH]   # rebuild the snapshots of stale attestations from the git history
 python3 ledger.py assess CLAIM --verdict consistent --model NAME --notes-file F.tex   # record an assessment with the state it judged
 python3 ledger.py assess CLAIM... --bind   # mark existing assessments as describing the present statement
 python3 ledger.py assess --audit [--bind-unchanged]   # unbound assessments: did what they compared change since, according to git?
@@ -213,7 +213,9 @@ its hash is exactly the attested one. It tries that commit, up to `--depth` earl
 by default; later ones help when the ledger was committed before the evidence it records), and finds a claim that has since
 moved to another paper. That works if everything the ledger reads is in git. A generated file that is ignored
 (a Lean dump, say) is not, and then nothing is written; `--partial` keeps the statement text of that commit as an unverified
-snapshot (marked as such by `diff`), and a later run reports it as `partial kept` while still trying for the exact one. Commit
+snapshot (marked as such by `diff`), and a later run reports it as `partial kept` while still trying for the exact one.
+`--overlay ledger/lean.json` (repeatable) puts the present version of such a file into every old tree: for every claim whose
+declarations have not changed since, that reproduces the attested hash, and the hash check keeps it sound for the others. Commit
 the dumps, or rely on the snapshots that `attest` writes from now on, and commit `ledger/snapshots/` too: they are the only
 record of what an attestation saw. `diff` also lists the files that changed since that commit.
 

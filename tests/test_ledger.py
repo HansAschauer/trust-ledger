@@ -1028,6 +1028,26 @@ class GitHistory(Toy):
         self.assertFalse((self.p / "ledger" / "snapshots").exists())
         self.assertEqual([r["status"] for r in self.L().recover_snapshots()], ["recovered"])
 
+    def test_an_ignored_dump_can_be_overlaid_and_is_still_checked_by_the_hash(self):
+        self.start(ignore_dump=True)
+        self.attest("lem-succ", "--no-snapshot")
+        self.attest("thm-twice", "--no-snapshot")
+        self.commit("attested")
+        self.change_paper()                                                                # lem-succ: only its text changes
+        self.edit_dump(lambda d: d["Toy.thm"].update(type="∀ n, Toy.f (Toy.f n) ≥ n + 2"))   # thm-twice: its Lean statement
+        self.commit("changed")
+        self.assertEqual({r["target"]: r["status"] for r in self.L().recover_snapshots()},
+                         {"lem-succ": "not found", "thm-twice": "not found"})
+        res = {r["target"]: r["status"] for r in self.L().recover_snapshots(overlay=["ledger/lean.json"])}
+        self.assertEqual(res, {"lem-succ": "recovered", "thm-twice": "not found"})         # today's dump is not the attested one
+        d = self.L().diff_since(claim="lem-succ")
+        self.assertIsNone(d["unverified"])
+        self.assertTrue(d["text"]["changed"])
+        self.assertTrue((self.p / "ledger" / "lean.json").is_file() and not (self.p / "ledger" / "lean.json").is_symlink())
+        for bad in ("../outside.json", "ledger/missing.json"):
+            with self.assertRaises(lg.LedgerError):
+                self.L().recover_snapshots(overlay=[bad])
+
     def test_what_is_not_in_git_cannot_be_rebuilt_exactly_only_as_text(self):
         self.start(ignore_dump=True)                                                       # the dumps are generated and not committed
         self.attest("lem-succ", "--no-snapshot")

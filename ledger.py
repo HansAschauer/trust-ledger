@@ -796,7 +796,7 @@ class Ledger:
             os.replace(tmp, p)                                          # atomic; the content is the same for every writer
         return p
 
-    def recover_snapshots(self, targets=None, depth=8, dry_run=False, partial=False, ahead=8):
+    def recover_snapshots(self, targets=None, depth=8, dry_run=False, partial=False, ahead=8, overlay=()):
         """Snapshots of *stale* attestations that have none, rebuilt from the project's git history: find the commit that added
         the attestation record (or the `git_head` it names), unpack the project as it was, load it with this ledger.py, and
         take the snapshot of the claim there. It is written only if its bound hash is exactly the one the attestation names,
@@ -806,11 +806,20 @@ class Ledger:
         Files that are not in git (a generated, ignored Lean dump, say) make the hash differ; then nothing is written, unless
         `partial`: the statement text of the commit that added the attestation is kept as an *unverified* snapshot (marked
         `partial`, no evidence nodes), good for showing how the text changed and for nothing else.
+        `overlay`: paths (relative to the project) of such files that are put, as they are now, into every unpacked tree. That
+        is sound for the same reason: a snapshot counts only if it reproduces the attested hash, whatever the inputs were; the
+        present Lean dump does so for every claim whose declarations have not changed since.
         Returns [{target, kind, bound, status ('recovered'|'would recover'|'partial'|'would keep partial'|'partial kept'|
         'not found'), commit, note}]; 'partial kept': no exact state found, an unverified snapshot was already there."""
         rc, _ = git(self.root, "rev-parse", "--git-dir")
         if rc != 0:
             raise LedgerError("this project is not in a git repository (or git is not installed): nothing to recover from")
+        over = []
+        for o in overlay:
+            f = (self.root / o).resolve()
+            if not f.is_relative_to(self.root) or not f.is_file():
+                raise LedgerError(f"--overlay {o}: not a file in the project directory")
+            over.append((f, f.relative_to(self.root)))
         wanted = {}
         for a in self.attestations:
             kind = "claim" if a.get("claim") else "hypothesis"
@@ -836,11 +845,15 @@ class Ledger:
                     d = tmp / commit[:12]
                     d.mkdir(exist_ok=True)
                     trees[commit] = d if git_extract(self.root, commit, d) and (d / "ledger" / "ledger.toml").is_file() else None
+                    for f, rel in over if trees[commit] else ():
+                        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+                        (d / rel).unlink(missing_ok=True)
+                        (d / rel).symlink_to(f)         # a link, not a copy: a dump can be hundreds of MB
                 try:
                     ledgers[(commit, paper)] = Ledger(trees[commit], paper) if trees[commit] else None
                 except Exception:       # an old tree that this ledger.py cannot read
                     ledgers[(commit, paper)] = None
-                while len(ledgers) > 3:
+                while len(ledgers) > 2:
                     c0, _ = oldest = next(iter(ledgers))
                     del ledgers[oldest]
                     if trees.get(c0) and not any(k[0] == c0 for k in ledgers):    # and its unpacked tree, which can be large too
@@ -2864,7 +2877,7 @@ def cmd_snapshot(L, args):
     print(f"{'would record' if args.dry_run else 'recorded'} {len(done)} snapshot(s) of current attestations" + (": " + ", ".join(done) if done else "") +
           "; the others already have one or have no current attestation")
     if args.from_git:
-        res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, ahead=args.ahead,
+        res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, ahead=args.ahead, overlay=args.overlay,
                                   dry_run=args.dry_run, partial=args.partial)
         for r in res:
             print(f"  {r['kind']} {r['target']} (bound {r['bound'][:12]}): {r['status']}" +
@@ -3425,6 +3438,9 @@ def main(argv=None):
     p.add_argument("targets", nargs="*", metavar="CLAIM", help="with --from-git: only these claims")
     p.add_argument("--from-git", action="store_true", help="also rebuild the snapshots of stale attestations from the git history")
     p.add_argument("--depth", type=int, default=8, help="with --from-git: how many earlier commits to try (default 8)")
+    p.add_argument("--overlay", action="append", default=[], metavar="PATH", help="with --from-git: put this file of the "
+                   "project (a git-ignored Lean dump, say) as it is now into every old tree tried; repeatable. Sound: a snapshot is still "
+                   "written only if it reproduces the attested hash")
     p.add_argument("--ahead", type=int, default=8, help="with --from-git: how many later commits to try after the one that added the attestation, "
                    "for evidence committed after the ledger (default 8)")
     p.add_argument("--dry-run", action="store_true", help="say what would be recorded or recovered, write nothing")
