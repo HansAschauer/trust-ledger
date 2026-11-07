@@ -841,7 +841,10 @@ class Ledger:
                 except Exception:       # an old tree that this ledger.py cannot read
                     ledgers[(commit, paper)] = None
                 while len(ledgers) > 3:
-                    del ledgers[next(iter(ledgers))]
+                    c0, _ = oldest = next(iter(ledgers))
+                    del ledgers[oldest]
+                    if trees.get(c0) and not any(k[0] == c0 for k in ledgers):    # and its unpacked tree, which can be large too
+                        shutil.rmtree(trees.pop(c0), ignore_errors=True)
             return ledgers[(commit, paper)]
 
         def has(L2, kind, name):
