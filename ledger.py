@@ -796,15 +796,18 @@ class Ledger:
             os.replace(tmp, p)                                          # atomic; the content is the same for every writer
         return p
 
-    def recover_snapshots(self, targets=None, depth=8, dry_run=False, partial=False):
+    def recover_snapshots(self, targets=None, depth=8, dry_run=False, partial=False, ahead=8):
         """Snapshots of *stale* attestations that have none, rebuilt from the project's git history: find the commit that added
         the attestation record (or the `git_head` it names), unpack the project as it was, load it with this ledger.py, and
         take the snapshot of the claim there. It is written only if its bound hash is exactly the one the attestation names,
-        so what is recovered is provably what was attested; the commit and up to `depth` first-parent ancestors are tried.
+        so what is recovered is provably what was attested; the commit and up to `depth` first-parent ancestors are tried,
+        and then up to `ahead` first-parent descendants (for evidence committed after the ledger file that records it).
+        A claim is looked up in its present paper and, failing that, in the whole ledger (it may have moved between papers).
         Files that are not in git (a generated, ignored Lean dump, say) make the hash differ; then nothing is written, unless
         `partial`: the statement text of the commit that added the attestation is kept as an *unverified* snapshot (marked
         `partial`, no evidence nodes), good for showing how the text changed and for nothing else.
-        Returns [{target, kind, bound, status ('recovered'|'would recover'|'partial'|'not found'), commit, note}]."""
+        Returns [{target, kind, bound, status ('recovered'|'would recover'|'partial'|'would keep partial'|'partial kept'|
+        'not found'), commit, note}]; 'partial kept': no exact state found, an unverified snapshot was already there."""
         rc, _ = git(self.root, "rev-parse", "--git-dir")
         if rc != 0:
             raise LedgerError("this project is not in a git repository (or git is not installed): nothing to recover from")
@@ -825,7 +828,10 @@ class Ledger:
         tmp = Path(tempfile.mkdtemp(prefix="ledger-git-"))
 
         def ledger_at(commit, paper):
-            if (commit, paper) not in ledgers:
+            # a loaded ledger can be large (a Lean dump of hundreds of MB): keep only the few used last, not every tree tried
+            if (commit, paper) in ledgers:
+                ledgers[(commit, paper)] = ledgers.pop((commit, paper))
+            else:
                 if commit not in trees:
                     d = tmp / commit[:12]
                     d.mkdir(exist_ok=True)
@@ -834,7 +840,12 @@ class Ledger:
                     ledgers[(commit, paper)] = Ledger(trees[commit], paper) if trees[commit] else None
                 except Exception:       # an old tree that this ledger.py cannot read
                     ledgers[(commit, paper)] = None
+                while len(ledgers) > 3:
+                    del ledgers[next(iter(ledgers))]
             return ledgers[(commit, paper)]
+
+        def has(L2, kind, name):
+            return name in (L2.claims if kind == "claim" else L2.scope_hyps)
         try:
             for bound, w in wanted.items():
                 kind, name = w["kind"], w["name"]
@@ -844,9 +855,12 @@ class Ledger:
                 if added:        # newest first: the last one added the record
                     rc, chain = git(self.root, "rev-list", "--first-parent", "-n", str(depth + 1), added[-1])
                     cands += chain.split()
+                    if ahead > 0:
+                        rc, later = git(self.root, "rev-list", "--reverse", "--first-parent", "--ancestry-path", f"{added[-1]}..HEAD")
+                        cands += later.split()[:ahead]
                 cands = list(dict.fromkeys(cands))
-                if kind == "claim":
-                    scopes = [self.claims[name].get("paper") if self.claims[name].get("paper") in papers else None]
+                if kind == "claim":    # its present paper first; the whole ledger if it was in another paper then
+                    scopes = list(dict.fromkeys([self.claims[name].get("paper") if self.claims[name].get("paper") in papers else None, None]))
                 else:
                     scopes = list(dict.fromkeys([self.hypotheses.get(name, {}).get("paper")] + papers + [None]))
                 res = dict(target=name, kind=kind, bound=bound, status="not found", commit="", note="")
@@ -855,7 +869,7 @@ class Ledger:
                 for c in cands:
                     for sc in scopes:
                         L2 = ledger_at(c, sc)
-                        if L2 is None:
+                        if L2 is None or not has(L2, kind, name):
                             continue
                         try:
                             snap = L2.snapshot_of(**{kind: name})
@@ -872,10 +886,14 @@ class Ledger:
                 if not res["commit"] and cands:
                     res["note"] = (f"tried {len(cands)} commit(s); none reproduces the attested state (generated or untracked inputs, "
                                    "or the state was never committed)")
-                    if partial and not self.snapshot_path(bound).exists():
+                    if self.snapshot_path(bound).exists():      # only a partial one can be there (others are not wanted)
+                        old = self.read_snapshot(bound)
+                        res.update(status="partial kept", commit=old.get("commit", ""), note=res["note"] +
+                                   "; the unverified snapshot (statement text only) recorded earlier stays")
+                    elif partial:
                         for c in cands:
-                            L2 = next((ledgers[(c, sc)] for sc in scopes if ledgers.get((c, sc)) is not None), None)
-                            if L2 is None or (name not in (L2.claims if kind == "claim" else L2.scope_hyps)):
+                            L2 = next((x for sc in scopes if (x := ledger_at(c, sc)) is not None and has(x, kind, name)), None)
+                            if L2 is None:
                                 continue
                             snap = L2.snapshot_of(**{kind: name})
                             snap = dict(snap, bound=bound, partial=True, commit=c, nodes={},
@@ -2843,7 +2861,8 @@ def cmd_snapshot(L, args):
     print(f"{'would record' if args.dry_run else 'recorded'} {len(done)} snapshot(s) of current attestations" + (": " + ", ".join(done) if done else "") +
           "; the others already have one or have no current attestation")
     if args.from_git:
-        res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, dry_run=args.dry_run, partial=args.partial)
+        res = L.recover_snapshots(targets=set(args.targets) or None, depth=args.depth, ahead=args.ahead,
+                                  dry_run=args.dry_run, partial=args.partial)
         for r in res:
             print(f"  {r['kind']} {r['target']} (bound {r['bound'][:12]}): {r['status']}" +
                   (f" from commit {r['commit'][:10]}" if r["commit"] else "") + (f"; {r['note']}" if r["note"] else ""))
@@ -3403,6 +3422,8 @@ def main(argv=None):
     p.add_argument("targets", nargs="*", metavar="CLAIM", help="with --from-git: only these claims")
     p.add_argument("--from-git", action="store_true", help="also rebuild the snapshots of stale attestations from the git history")
     p.add_argument("--depth", type=int, default=8, help="with --from-git: how many earlier commits to try (default 8)")
+    p.add_argument("--ahead", type=int, default=8, help="with --from-git: how many later commits to try after the one that added the attestation, "
+                   "for evidence committed after the ledger (default 8)")
     p.add_argument("--dry-run", action="store_true", help="say what would be recorded or recovered, write nothing")
     p.add_argument("--partial", action="store_true", help="with --from-git: where the exact state cannot be rebuilt (evidence not in git), keep the statement text as an unverified snapshot")
     p = sub.add_parser("diff", help="what changed since the latest attestation (of a claim, or --hypothesis) that has a snapshot")

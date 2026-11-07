@@ -185,7 +185,7 @@ python3 ledger.py -P NAME verify-attestation me.att.toml --lock ledger/lock-NAME
 python3 ledger.py attest --hypothesis NAME --person NAME --level green   # "this hypothesis is a known theorem"
 python3 ledger.py diff CLAIM        # what changed since the latest attestation of CLAIM that has a snapshot (--hypothesis NAME)
 python3 ledger.py snapshot          # record snapshots for current attestations that have none (see below)
-python3 ledger.py snapshot --from-git [--partial] [--dry-run]   # rebuild the snapshots of stale attestations from the git history
+python3 ledger.py snapshot --from-git [--partial] [--dry-run] [--depth N] [--ahead N]   # rebuild the snapshots of stale attestations from the git history
 python3 ledger.py assess CLAIM --verdict consistent --model NAME --notes-file F.tex   # record an assessment with the state it judged
 python3 ledger.py assess CLAIM... --bind   # mark existing assessments as describing the present statement
 python3 ledger.py assess --audit [--bind-unchanged]   # unbound assessments: did what they compared change since, according to git?
@@ -209,10 +209,13 @@ current *now*, so run it while they are. `attest --no-snapshot` and standalone a
 **Git.** If the project is a git repository, `attest` also writes `git_head` and `git_dirty` into the record: where the project
 stood. They are not signed and not hashed, only a hint. `snapshot --from-git` uses them, or searches the history for the
 commit that added the attestation, unpacks the project as it was, loads it and takes the snapshot there; it is written only if
-its hash is exactly the attested one. That works if everything the ledger reads is in git. A generated file that is ignored
+its hash is exactly the attested one. It tries that commit, up to `--depth` earlier ones and up to `--ahead` later ones (both 8
+by default; later ones help when the ledger was committed before the evidence it records), and finds a claim that has since
+moved to another paper. That works if everything the ledger reads is in git. A generated file that is ignored
 (a Lean dump, say) is not, and then nothing is written; `--partial` keeps the statement text of that commit as an unverified
-snapshot (marked as such by `diff`). Commit the dumps, or rely on the snapshots that `attest` writes from now on.
-`diff` also lists the files that changed since that commit.
+snapshot (marked as such by `diff`), and a later run reports it as `partial kept` while still trying for the exact one. Commit
+the dumps, or rely on the snapshots that `attest` writes from now on, and commit `ledger/snapshots/` too: they are the only
+record of what an attestation saw. `diff` also lists the files that changed since that commit.
 
 **Assessments.** A model's assessment of a claim (`[assessment.NAME]`) is an aid, not an attestation, and does not enter the claim's
 hash. It can record what it judged (`spec`, `reading`); `status` then warns when it is `outdated`, and the review packet says so

@@ -74,3 +74,10 @@ to an outside registry (`examples/prereg` records the registry URL). Two mechani
 Questions for later: which nodes get dated (the whole root, or single nodes such as a preregistration); how
 the appendix shows dates without implying more than the mechanism proves; receipts that need network access
 to check (the core never goes online during `verify`, so checking could be a separate command).
+
+**A statements-only extract of large dumps, tracked in git** (2026-11-07). A real Lean dump can be hundreds of MB, almost all of
+it proof terms (`content`); the part attestations bind to (`spec`, the statements and definitions) is a few MB. Projects
+therefore git-ignore the dump, and `snapshot --from-git` cannot rebuild the attested state of Lean claims from the history.
+Tracking a small extract with only the spec part of every node would be enough for that, since a claim's bound hash uses the
+spec hash of every evidence node that has one (`evidence_spec`; every Lean declaration has one). Open: its format and name, how `recover_snapshots` loads an old tree from it (the full hashes, and so the root
+and `verify`, cannot be recomputed from it), and keeping it in step with the dump (written by `extract`).

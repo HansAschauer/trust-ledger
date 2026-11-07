@@ -978,6 +978,56 @@ class GitHistory(Toy):
         res = self.L().recover_snapshots()
         self.assertEqual(res[0]["status"], "recovered")
 
+    def move_to_second_paper(self):
+        claims = self.p / "ledger" / "claims.toml"
+        txt = claims.read_text()
+        head, sep, rest = txt.partition("[claim.lem-succ]")
+        block, sep2, tail = rest.partition("\n[")
+        claims.write_text(head + sep + block.replace('paper = "toy"', 'paper = "second"') + sep2 + tail)
+
+    def two_papers(self):
+        with open(self.p / "ledger" / "ledger.toml", "a") as f:
+            f.write('\n[paper.second]\nmain = "paper/main.tex"\n')
+
+    def test_a_claim_that_moved_to_another_paper_is_found_in_the_whole_ledger(self):
+        self.two_papers()
+        self.start()
+        self.attest("lem-succ", "--no-snapshot")                                           # in paper toy
+        self.commit("attested")
+        self.move_to_second_paper()
+        self.change_paper()
+        self.commit("moved and changed")
+        L = lg.Ledger(self.p, "second")
+        self.assertEqual(L.claims["lem-succ"]["paper"], "second")
+        self.assertEqual([r["status"] for r in L.recover_snapshots()], ["recovered"])
+        self.assertTrue(lg.Ledger(self.p, "second").diff_since(claim="lem-succ")["text"]["changed"])
+
+    def test_a_moved_claim_also_gets_a_text_only_snapshot(self):
+        self.two_papers()
+        self.start(ignore_dump=True)
+        self.attest("lem-succ", "--no-snapshot")
+        self.commit("attested")
+        self.move_to_second_paper()
+        self.change_paper()
+        self.commit("moved and changed")
+        res = lg.Ledger(self.p, "second").recover_snapshots(partial=True)
+        self.assertEqual([r["status"] for r in res], ["partial"])
+
+    def test_evidence_committed_after_the_ledger_is_found_in_a_later_commit(self):
+        self.start()
+        self.edit_dump(lambda d: d["Toy.f"].update(value="fun n => n + 2"))               # attested before it was committed
+        self.attest("lem-succ", "--no-snapshot")
+        self.g("add", "ledger/attestations.toml")
+        self.g("commit", "-q", "-m", "ledger first")
+        self.commit("then the evidence")
+        self.change_paper()
+        self.commit("later change")
+        self.assertEqual([r["status"] for r in self.L().recover_snapshots(ahead=0)], ["not found"])
+        self.assertEqual([r["status"] for r in self.L().recover_snapshots(dry_run=True)], ["would recover"])
+        self.assertEqual(lg.main(["-C", str(self.p), "snapshot", "--from-git", "--ahead", "0"]), 0)
+        self.assertFalse((self.p / "ledger" / "snapshots").exists())
+        self.assertEqual([r["status"] for r in self.L().recover_snapshots()], ["recovered"])
+
     def test_what_is_not_in_git_cannot_be_rebuilt_exactly_only_as_text(self):
         self.start(ignore_dump=True)                                                       # the dumps are generated and not committed
         self.attest("lem-succ", "--no-snapshot")
@@ -990,6 +1040,8 @@ class GitHistory(Toy):
         self.assertFalse((self.p / "ledger" / "snapshots").exists())                        # nothing unverified without asking for it
         res = self.L().recover_snapshots(partial=True)
         self.assertEqual([r["status"] for r in res], ["partial"])
+        again = self.L().recover_snapshots()                                               # tried again, exactly; the text-only one stays
+        self.assertEqual([(r["status"], r["commit"]) for r in again], [("partial kept", res[0]["commit"])])
         d = self.L().diff_since(claim="lem-succ")
         self.assertTrue(d["available"])
         self.assertTrue(d["unverified"]["commit"])
