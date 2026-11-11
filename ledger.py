@@ -2073,8 +2073,8 @@ def cmd_tex(L, args):
     attesters = sorted({p for n in names for p, _, _, cur in L.attestation_state(n) if cur})
     nattested = sum(any(cur for *_, cur in L.attestation_state(n)) for n in names)
     levels = ", ".join(f"{cnt[k]} {k}" for k in LEVELS if cnt[k])
-    hyp_refs = prose_list([reference_tex(L.hypotheses.get(h, {}).get("label"), allparsed_h, L.kind_words)
-                           if L.hypotheses.get(h, {}).get("label") else f"\\texttt{{{tex_esc(h)}}}"
+    hyp_refs = prose_list([(reference_tex(L.hypotheses.get(h, {}).get("label"), allparsed_h, L.kind_words)
+                            if L.hypotheses.get(h, {}).get("label") else None) or f"\\texttt{{{tex_esc(h)}}}"
                            for h in sorted(L.scope_hyps, key=lambda h: hkey[h])])
     hyp_attesters = sorted({p for h in L.scope_hyps for p, lvl, _, cur in L.hypothesis_state(h) if cur and lvl == "green"})
     allparsed = allparsed_h
